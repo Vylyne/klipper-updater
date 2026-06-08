@@ -1,26 +1,32 @@
 {
-    "sv08Mainboard": {
-        "chip": "stm32f103xe",
-        "serials": [
-            "36FFD9054755303923891357-if00"
-        ]
-    },
-    "bttmmbv1": {
-        "chip": "stm32g0b1xx",
-        "serials": [
-            "1F002A000A50304158373420-if00"
-        ]
-    },
-    "bttebb36": {
-        "chip": "stm32g0b1xx",
-        "serials": [
-            "110032000450505539323520-if00"
-        ]
-    },
-    "rp2040zero": {
-        "chip": "rp2040",
-        "serials": [
-        "rp2040_E6637C05E758A438-if00"
-        ]
-    }
+    "mcus": [
+        {
+            "name": "sv08Mainboard",
+            "chip": "stm32f103xe",
+            "serials": [
+                "36FFD9054755303923891357-if00"
+            ]
+        },
+        {
+            "name": "bttmmbv1",
+            "chip": "stm32g0b1xx",
+            "serials": [
+                "1F002A000A50304158373420-if00"
+            ]
+        },
+        {
+            "name": "bttebb36",
+            "chip": "stm32g0b1xx",
+            "serials": [
+                "110032000450505539323520-if00"
+            ]
+        },
+        {
+            "name": "rp2040zero",
+            "chip": "rp2040",
+            "serials": [
+                "rp2040_E6637C05E758A438-if00"
+            ]
+        }
+    ]
 }
