@@ -45,6 +45,13 @@ while true; do
     esac
 done
 
+getMcu() {
+
+}
+
+addMcu() {
+
+}
 # If addMCU was set and isn't still "unset"
 if [ "$addMCU" != "unset" ]; then
     
