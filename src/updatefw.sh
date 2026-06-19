@@ -27,7 +27,7 @@ fi
 
 eval set -- "$OPTS"
 
-addMCU="unset"
+addMCU=""
 
 while true; do
     case "$1" in
@@ -316,8 +316,13 @@ AddSerial() {
                 ;;
         esac
     done
-	jq --arg type "$type" --arg serial "$serial" '.[$type].serials |= (.+ [$serial] | unique)' "$MCUS_JSON" > "${MCUS_JSON}.tmp" \
-		&& mv "${MCUS_JSON}.tmp" "$MCUS_JSON"
+	if [ $type ] && [ $serial ]; then
+		jq --arg type "$type" --arg serial "$serial" '.[$type].serials |= (.+ [$serial] | unique)' "$MCUS_JSON" > "${MCUS_JSON}.tmp" \
+			&& mv "${MCUS_JSON}.tmp" "$MCUS_JSON"
+	else
+		echo "ERROR: AddSerial(): must provide both tag and serial. $params"
+		return 1
+	fi
 }
 
 getUnknownSerials() {
@@ -542,16 +547,3 @@ flash_NewRP2040() {
 	fi
 }
 
-checkSerial(){
-	if [ jq -e --arg serial "$1" '.[][] | select(. == $serial)' "$MCUS_JSON" > /dev/null ]; then
-		true
-	else
-		false
-	fi
-}
-
-# If addMCU was set and isn't still "unset"
-if [ "$addMCU" != "unset" ]; then
-    
-
-fi
