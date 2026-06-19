@@ -114,6 +114,7 @@ def build_fw(args):
     
     # Make with extra args
     make_cmd = ["make"] + extra_args
+    print(F"{make_cmd}")
     res = subprocess.run(make_cmd, cwd=fw_dir, env=env)
     
     if res.returncode == 0:
