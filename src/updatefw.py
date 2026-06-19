@@ -93,7 +93,7 @@ def make_menuconfig(args):
     input("Press Enter to continue to menuconfig...")
     
     # Run menuconfig natively (pass stdin/stdout so curses UI works)
-    subprocess.run(["echo", "make", "menuconfig", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir, stdin=sys.stdin, stdout=sys.stdout)
+    subprocess.run(["make", "menuconfig", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir, stdin=sys.stdin, stdout=sys.stdout)
 
 def build_fw(args):
     config_file = os.path.join(SETTINGS_PATH, args.type, f"{args.fw}.config")
@@ -107,14 +107,12 @@ def build_fw(args):
     extra_args = get_extra_args(args.type, args.fw).split()
     
     print(f"Building {args.fw} for {args.type}...")
-    env = os.environ.copy()
-    env["KCONFIG_CONFIG"] = config_file
 
     # Make clean
-    subprocess.run(["make", "clean"], cwd=fw_dir, env=env)
+    subprocess.run(["make", "clean", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir, env=env)
     
     # Make with extra args
-    make_cmd = ["make"] + extra_args
+    make_cmd = ["make", "KCONFIG_CONFIG=" + config_file] + extra_args
     print(F"{make_cmd}")
     res = subprocess.run(make_cmd, cwd=fw_dir, env=env)
     
