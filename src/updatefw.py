@@ -100,7 +100,7 @@ def build_fw(args):
     config_file = os.path.join(SETTINGS_PATH, args.type, f"{args.fw}.config")
     fw_out = os.path.join(SETTINGS_PATH, args.type, f"{args.fw}.bin")
     fw_dir = os.path.expanduser(f"~/{args.fw}")
-    makefile = fw_dir + "/makefile"
+    makefile = fw_dir + "/Makefile"
     temp_makefile = False
 
     if not os.path.exists(config_file):
