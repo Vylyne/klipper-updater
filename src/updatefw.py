@@ -109,12 +109,12 @@ def build_fw(args):
     print(f"Building {args.fw} for {args.type}...")
 
     # Make clean
-    subprocess.run(["make", "clean", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir, env=env)
+    subprocess.run(["make", "clean", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir)
     
     # Make with extra args
     make_cmd = ["make", "KCONFIG_CONFIG=" + config_file] + extra_args
     print(F"{make_cmd}")
-    res = subprocess.run(make_cmd, cwd=fw_dir, env=env)
+    res = subprocess.run(make_cmd, cwd=fw_dir)
     
     if res.returncode == 0:
         compiled_bin = os.path.join(fw_dir, "out", f"{args.fw}.bin")
