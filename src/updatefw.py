@@ -107,6 +107,9 @@ def build_fw(args):
 
     extra_src = get_extra_src(args.type, args.fw)
     if extra_src:
+        with open(fw_dir + '/src/Makefile', 'r') as file:
+            makefile_original = file.readlines()
+
         shutil.copyfile(fw_dir + '/src/Makefile', fw_dir + '/src/Makefile.bak')
         with open(fw_dir + '/src/Makefile', 'a') as file:
             file.write(extra_src)
@@ -119,8 +122,10 @@ def build_fw(args):
     # Make with extra args
     res = subprocess.run(["make", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir)
     if extra_src:
-        os.remove(fw_dir + '/src/Makefile')
-        shutil.copyfile(fw_dir + '/src/Makefile.bak', fw_dir + '/src/Makefile')
+        # os.remove(fw_dir + '/src/Makefile')
+        # shutil.copyfile(fw_dir + '/src/Makefile.bak', fw_dir + '/src/Makefile')
+        with open(fw_dir + '/src/Makefile', 'w') as file:
+            file.writelines(makefile_original)
 
     if res.returncode == 0:
         compiled_bin = os.path.join(fw_dir, "out", f"{args.fw}.bin")
