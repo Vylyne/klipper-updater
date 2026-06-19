@@ -4,6 +4,7 @@ import json
 import argparse
 import subprocess
 import sys
+import shutil
 
 # --- CONFIGURATION ---
 SETTINGS_PATH = os.path.expanduser("~/mcus")
@@ -99,23 +100,32 @@ def build_fw(args):
     config_file = os.path.join(SETTINGS_PATH, args.type, f"{args.fw}.config")
     fw_out = os.path.join(SETTINGS_PATH, args.type, f"{args.fw}.bin")
     fw_dir = os.path.expanduser(f"~/{args.fw}")
+    makefile = fw_dir + "/makefile"
+    temp_makefile = False
 
     if not os.path.exists(config_file):
         print(f"Configuration file not found for {args.type} ({args.fw}). Launching menuconfig...")
         make_menuconfig(args)
 
-    extra_args = get_extra_args(args.type, args.fw).split()
+    extra_args = get_extra_args(args.type, args.fw)
+    if extra_args:
+        shutil.copyfile(makefile, makefile + ".tmp")
+        makefile = makefile + ".tmp"
+        with open(makefile, 'a') as file:
+            file.write('input')
+        temp_makefile = True
     
     print(f"Building {args.fw} for {args.type}...")
 
     # Make clean
-    subprocess.run(["make", "clean", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir)
+    subprocess.run(["make", "clean", "KCONFIG_CONFIG=" + config_file, "--file", makefile], cwd=fw_dir)
     
     # Make with extra args
-    make_cmd = ["make", "KCONFIG_CONFIG=" + config_file] + extra_args
-    print(F"{make_cmd}")
-    res = subprocess.run(make_cmd, cwd=fw_dir)
-    
+    res = subprocess.run(["make", "KCONFIG_CONFIG=" + config_file, "--file", makefile], cwd=fw_dir)
+
+    if temp_makefile:
+        os.remove(makefile)
+
     if res.returncode == 0:
         compiled_bin = os.path.join(fw_dir, "out", f"{args.fw}.bin")
         if os.path.exists(compiled_bin):
