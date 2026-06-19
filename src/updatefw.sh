@@ -62,7 +62,7 @@ McuTypeExists() {
                 shift
                 break ;;
             *)
-                echo "Invalid Call: jqMcuTypeExists $@"
+                echo "Invalid Call: McuTypeExists $@"
                 exit 1
                 ;;
         esac
@@ -88,7 +88,7 @@ ShowMcuType() {
                 shift
                 break ;;
             *)
-                echo "Invalid Call: jqMcuTypeExists $@"
+                echo "Invalid Call: ShowMcuType $@"
                 exit 1
                 ;;
         esac
@@ -101,9 +101,10 @@ GetMcuTypes() {
 	jq 'keys[]' "$MCUS_JSON"
 }
 
-GetDevType() {
-	local params=$(getopt -o d: --long dev: -- "$@")
+GetMcuType() {
+	local params=$(getopt -o d:s: --long dev:,serial: -- "$@")
 	local dev=""
+	local serial=""
     eval set -- "$params"
 
 	while true; do
@@ -111,23 +112,56 @@ GetDevType() {
             -d | --dev)
                 dev="$2"
                 shift 2 ;;
+			-s | --serial)
+				serial="$2"
+				shift 2 ;;
             --)
                 shift
                 break ;;
             *)
-                echo "Invalid Call: getExtraArgs $@"
+                echo "Invalid Call: GetMcuType $@"
                 exit 1
                 ;;
         esac
     done
-	local serial=${dev##*_}
-	local type=$(jq --arg serial $serial 'to_entries | map(select(.value.serials[]=="110032000450505539323520-if00"))[].key' "$MCUS_JSON" | tr -d '"')
+	if [ $dev] && ! [ $serial ]; then
+		serial="${dev##*_}"
+	fi
+
+	local type=$(jq --arg serial $serial 'to_entries | map(select(.value.serials[]==$serial))[].key' "$MCUS_JSON" | tr -d '"')
 	if [ $type ]; then
 		echo $type
 		return 0
 	else
 		return 1
 	fi
+}
+
+GetMCUPath() {
+	local params=$(getopt -o s: --long serial: -- "$@")
+	local serial=""
+    eval set -- "$params"
+
+	while true; do
+        case "$1" in
+			-s | --serial)
+				serial="$2"
+				shift 2 ;;
+            --)
+                shift
+                break ;;
+            *)
+                echo "Invalid Call: GetMCUPath $@"
+                exit 1
+                ;;
+        esac
+    done
+
+	if ! [ $serial ]; then
+		echo "Error: no Serial provided."
+		return 1
+	fi
+	echo $(ls /dev/serial/by-id/usb-*$serial)
 }
 
 GetSerials() {
@@ -144,7 +178,7 @@ GetSerials() {
                 shift
                 break ;;
             *)
-                echo "Invalid Call: getExtraArgs $@"
+                echo "Invalid Call: GetSerials $@"
                 exit 1
                 ;;
         esac
@@ -175,7 +209,7 @@ GetDevicePaths() {
                 shift
                 break ;;
             *)
-                echo "Invalid Call: getExtraArgs $@"
+                echo "Invalid Call: GetDevicePaths $@"
                 return 1
                 ;;
         esac
@@ -210,17 +244,16 @@ GetExtraArgs() {
                 shift
                 break ;;
             *)
-                echo "Invalid Call: getExtraArgs $@"
+                echo "Invalid Call: GetExtraArgs $@"
                 exit 1
                 ;;
         esac
     done
 
 	if [ $fw ] && [ $type ]; then
-		jq --arg fw "$fw" --arg type "$type" '.[$type][$fw]["extra_args"]' "$MCUS_JSON"
+		jq --arg fw "$fw" --arg type "$type" '.[$type][$fw]["extra_src"]' "$MCUS_JSON"
 	else
-		echo "Must provide FW and Type for GetExtraArgs"
-		exit 1
+		return 1
 	fi
 }
 
@@ -258,7 +291,7 @@ AddMcuType() {
                 shift
                 break ;;
             *)
-                echo "Invalid Call: jqAddSerial $@"
+                echo "Invalid Call: AddMcuType $@"
                 exit 1
                 ;;
         esac
@@ -285,8 +318,8 @@ AddMcuType() {
 		--arg klipperExtraArgs "$klipperExtraArgs" \
 		'setpath([$type]; {
 				"chipset": $chipset,
-				"katapult": {"installed": $katapult, "extra_args": $katapultExtraArgs},
-				"klipper": { "extra_args": $klipperExtraArgs},
+				"katapult": {"installed": $katapult, "extra_src": $katapultExtraArgs},
+				"klipper": { "extra_src": $klipperExtraArgs},
 				"serials":[]
 			}
 		)' "$MCUS_JSON" > "${MCUS_JSON}.tmp" \
@@ -311,7 +344,7 @@ AddSerial() {
                 shift
                 break ;;
             *)
-                echo "Invalid Call: jqAddSerial $@"
+                echo "Invalid Call: AddSerial $@"
                 exit 1
                 ;;
         esac
@@ -391,10 +424,27 @@ getUnknownSerials() {
     done
 }
 
-add_mcu() {
-    local type=$1
-    local katapult_config="$SETTINGS_PATH/$mcu/katapult.config"
-    local fwOut="$SETTINGS_PATH/$mcu/katapult.bin"
+addMCU() {
+	local params=$(getopt -o t: --long type: -- "$@")
+    local type=""
+    eval set -- "$params"
+
+    while true; do
+        case "$1" in
+            -t | --type)
+                type="$2"
+                shift 2 ;;
+            --)
+                shift
+                break ;;
+            *)
+                echo "Invalid Call: addMCU $@"
+                exit 1
+                ;;
+        esac
+    done
+    local katapult_config="$SETTINGS_PATH/$type/katapult.config"
+    local fwOut="$SETTINGS_PATH/$type/katapult.bin"
 
     # Check if the MCU 'type' exists in the flat JSON array
     if jqMcuTypeExists --type $type then
@@ -404,8 +454,8 @@ add_mcu() {
     fi
 
     # Let's build katapult!
-    make_menuconfig "$mcu" "katapult"
-    build_fw "$mcu" "katapult"
+    make_menuconfig  --type "$type" --fw "katapult"
+    BuildFW --type "$type" --fw "katapult"
 
     # Ensure config file exists before reading it
     if [ ! -f "$katapult_config" ]; then
@@ -454,10 +504,30 @@ add_mcu() {
     fi
 }
 
-make_menuconfig() {
-    local type=$1
-    local fw=$2
+MakeMenuConfig() {
+	local params=$(getopt -o f:t: --long fw:,type: -- "$@")
+    local type=""
+    local fw=""
     local config="$SETTINGS_PATH/$type/$fw.config"
+    eval set -- "$params"
+
+    while true; do
+        case "$1" in
+            -f | --fw)
+                fw="$2"
+                shift 2 ;;
+            -t | --type)
+                type="$2"
+                shift 2 ;;
+            --)
+                shift
+                break ;;
+            *)
+                echo "Invalid Call: MakeMenuConfig $@"
+                exit 1
+                ;;
+        esac
+    done
 
     # Ensure the configuration destination directory exists
     mkdir -p "$(dirname "$config")"
@@ -475,12 +545,32 @@ make_menuconfig() {
     popd >/dev/null || exit
 }
 
-build_fw() {
-    local type=$1
-    local fw=$2
+BuildFW() {
+	local params=$(getopt -o f:t: --long fw:,type: -- "$@")
+    local type=""
+    local fw=""
     local config="$SETTINGS_PATH/$type/$fw.config"
     local fwOut="$SETTINGS_PATH/$type/$fw.bin"
-    local extra_make_args=""
+    local extra_src=""
+    eval set -- "$params"
+
+    while true; do
+        case "$1" in
+            -f | --fw)
+                fw="$2"
+                shift 2 ;;
+            -t | --type)
+                type="$2"
+                shift 2 ;;
+            --)
+                shift
+                break ;;
+            *)
+                echo "Invalid Call: BuildFW $@"
+                exit 1
+                ;;
+        esac
+    done
 
     # Ensure the configuration exists
 	if [ ! -f "$config" ]; then
@@ -488,20 +578,30 @@ build_fw() {
 		make_menuconfig "$mcu" "$fw"
 	fi
 
-    if [ "$fw" = "klipper" ]; then
-        case "$mcu" in 
-            *buffer*|flylllplus)
-                extra_make_args="src-y+=src/buffer.c"
-                ;;
-        esac
-    fi
-
-    # Switching directory for make (Fixed $buildfw -> $fw)
+	extra_src=$(GetExtraArgs --fw "$fw" --type "$type")
+    # Switching directory for make (Fixed $BuildFW -> $fw)
     pushd "$HOME/$fw" >/dev/null || exit
+
+	# if we have extra source files to include we need to add it to the make file
+	# as the currentl Makefile setup does not allow for us to add them via the make command.
+	if [ $extra_src ]; then
+		echo "Adding Extra lines to src/Makefile"
+		# backup contents
+		MakefileContent=$(<src/Makefile)
+
+		# add the extra src
+		echo $extra_src >> src/Makefile
+	fi
+
     printf "Building %s for %s\n" "$fw" "$mcu"
     
     make clean KCONFIG_CONFIG="$config"
     make KCONFIG_CONFIG="$config" $extra_make_args
+
+	# restore contents.
+	if [ $extra_src ]; then
+		echo $MakefileContent > src/Makefile
+	fi
 
     # Copying to compiled firmware mcu folder to keep (Streamlined for strict .bin outputs)
     cp -f "out/$fw.bin" "$fwOut"
@@ -510,7 +610,8 @@ build_fw() {
     popd >/dev/null || exit
 }
 
-flash_NewSTM32() {
+# This is only required for flashing new STM32 Devices once Katapult is on them it's no longer needed.
+FlashNewSTM32() {
 	local fwImg=$1
 	echo "Looking for STM32 device in DFU mode via dfu-util..."
 	# Check if a DFU device exists
@@ -524,7 +625,8 @@ flash_NewSTM32() {
 	fi
 }
 
-flash_NewRP2040() {
+
+FlashNewRP2040() {
 	echo "Looking for RP2040 device in BOOTSEL mode..."
 	# RP2040 mounts as a USB mass storage block device when in BOOTSEL mode
 	# We look for the Raspberry Pi volume label or standard mount points
@@ -547,3 +649,65 @@ flash_NewRP2040() {
 	fi
 }
 
+FlashDevice() {
+	local params=$(getopt -o f:s:p:t: --long fw:,serial:,path:,type:-- "$@")
+    local fw=""
+    local serial=""
+	local path=""
+	local type=""
+
+    eval set -- "$params"
+
+    while true; do
+        case "$1" in
+            -f | --fw)
+                fw="$2"
+                shift 2 ;;
+            -s | --serial)
+                serial="$2"
+                shift 2 ;;
+            -p | --path)
+                path="$2"
+                shift 2
+				if [ ! -e $path ]; then
+					echo "Path: $path not found"
+					return 1
+				fi ;;
+			-t | --type)
+				type="$2"
+				shift 2 ;;
+            --)
+                shift
+                break ;;
+            *)
+                echo "Invalid Call: flashDevice $@"
+                exit 1
+                ;;
+        esac
+    done
+
+	if [ $path ] && ! [ $serial ]; then
+		serial="${path##*_}"
+	fi
+
+	if ! [ $type ]; then
+		type=$(GetMcuType --serial $serial)
+	fi
+
+	if ! [ $path ]; then
+		path=$(GetMcuPath)
+	fi
+
+	fwImg="$SETTINGS_PATH/$type/$fw.bin"
+
+	if [ ! -e $fwImg ]; then
+		echo "Error: $fwImg not found"
+		return 1
+	fi
+
+	if [ ! -e $path ]; then
+		echo "Error $path not found"
+	fi
+
+	~/katapult/scripts/flashtool.py -d "$path" -f "$fwImage"
+}
