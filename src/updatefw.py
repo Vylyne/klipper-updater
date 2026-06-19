@@ -82,6 +82,7 @@ def make_menuconfig(args):
     config_dir = os.path.join(SETTINGS_PATH, args.type)
     os.makedirs(config_dir, exist_ok=True)
     config_file = os.path.join(config_dir, f"{args.fw}.config")
+    print(F"config_file: {config_file}")
     
     fw_dir = os.path.expanduser(f"~/{args.fw}")
     if not os.path.exists(fw_dir):
