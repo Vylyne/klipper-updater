@@ -123,8 +123,8 @@ def build_fw(args):
     # Make with extra args
     res = subprocess.run(["make", "KCONFIG_CONFIG=" + config_file, "--file", makefile], cwd=fw_dir)
 
-    if temp_makefile:
-        os.remove(makefile)
+    # if temp_makefile:
+    #     os.remove(makefile)
 
     if res.returncode == 0:
         compiled_bin = os.path.join(fw_dir, "out", f"{args.fw}.bin")
