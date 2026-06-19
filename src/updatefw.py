@@ -32,7 +32,9 @@ def save_data(data):
 def get_extra_args(mcu_type, fw):
     data = load_data()
     if mcu_type in data and fw in data[mcu_type]:
-        return data[mcu_type][fw].get("extra_args", "")
+        extra_args = data[mcu_type][fw].get("extra_args", "")
+        print(F"{extra_args}")
+        return extra_args
     return ""
 
 # --- ACTION FUNCTIONS ---
@@ -103,7 +105,7 @@ def build_fw(args):
         print(f"Configuration file not found for {args.type} ({args.fw}). Launching menuconfig...")
         make_menuconfig(args)
 
-    extra_args = get_extra_args(args.type, args.fw)
+    extra_args = get_extra_args(args.type, args.fw).split()
     
     print(f"Building {args.fw} for {args.type}...")
     env = os.environ.copy()
