@@ -103,7 +103,7 @@ def build_fw(args):
         print(f"Configuration file not found for {args.type} ({args.fw}). Launching menuconfig...")
         make_menuconfig(args)
 
-    extra_args = get_extra_args(args.type, args.fw).split()
+    extra_args = get_extra_args(args.type, args.fw)
     
     print(f"Building {args.fw} for {args.type}...")
     env = os.environ.copy()
