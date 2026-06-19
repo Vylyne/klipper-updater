@@ -95,7 +95,7 @@ def make_menuconfig(args):
     # Run menuconfig natively (pass stdin/stdout so curses UI works)
     env = os.environ.copy()
     env["KCONFIG_CONFIG"] = config_file
-    subprocess.run(["make", "menuconfig"], cwd=fw_dir, env=env, stdin=sys.stdin, stdout=sys.stdout)
+    subprocess.run(["echo", "make", "menuconfig"], cwd=fw_dir, env=env, stdin=sys.stdin, stdout=sys.stdout)
 
 def build_fw(args):
     config_file = os.path.join(SETTINGS_PATH, args.type, f"{args.fw}.config")
