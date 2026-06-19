@@ -33,7 +33,7 @@ def get_extra_args(mcu_type, fw):
     data = load_data()
     if mcu_type in data and fw in data[mcu_type]:
         extra_args = data[mcu_type][fw].get("extra_args", "")
-        print(F"{extra_args}")
+        print(F"Extra args: '{extra_args}'")
         return extra_args
     return ""
 
