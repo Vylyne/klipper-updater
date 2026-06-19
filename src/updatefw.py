@@ -30,12 +30,12 @@ def save_data(data):
         json.dump(data, f, indent=4)
     os.replace(tmp_path, MCUS_JSON)
 
-def get_extra_args(mcu_type, fw):
+def get_extra_src(mcu_type, fw):
     data = load_data()
     if mcu_type in data and fw in data[mcu_type]:
-        extra_args = data[mcu_type][fw].get("extra_args", "")
-        print(F"Extra args: '{extra_args}'")
-        return extra_args
+        extra_src = data[mcu_type][fw].get("extra_src", "")
+        print(F"Extra args: '{extra_src}'")
+        return extra_src
     return ""
 
 # --- ACTION FUNCTIONS ---
@@ -55,10 +55,10 @@ def add_mcu_type(args):
         "chipset": args.chipset,
         "katapult": {
             "installed": not args.no_katapult,
-            "extra_args": args.katapult_args
+            "extra_src": args.katapult_args
         },
         "klipper": {
-            "extra_args": args.klipper_args
+            "extra_src": args.klipper_args
         },
         "serials": []
     }
@@ -100,31 +100,27 @@ def build_fw(args):
     config_file = os.path.join(SETTINGS_PATH, args.type, f"{args.fw}.config")
     fw_out = os.path.join(SETTINGS_PATH, args.type, f"{args.fw}.bin")
     fw_dir = os.path.expanduser(f"~/{args.fw}")
-    makefile = fw_dir + "/Makefile"
-    temp_makefile = False
 
     if not os.path.exists(config_file):
         print(f"Configuration file not found for {args.type} ({args.fw}). Launching menuconfig...")
         make_menuconfig(args)
 
-    extra_args = get_extra_args(args.type, args.fw)
-    if extra_args:
-        shutil.copyfile(makefile, makefile + ".tmp")
-        makefile = makefile + ".tmp"
-        with open(makefile, 'a') as file:
-            file.write(extra_args)
-        temp_makefile = True
+    extra_src = get_extra_src(args.type, args.fw)
+    if extra_src:
+        shutil.copyfile(fw_dir + 'src/Makefile', fw_dir + 'src/Makefile.bak')
+        with open(fw_dir + 'src/Makefile', 'a') as file:
+            file.write(extra_src)
     
     print(f"Building {args.fw} for {args.type}...")
 
     # Make clean
-    subprocess.run(["make", "clean", "KCONFIG_CONFIG=" + config_file, "--file", makefile], cwd=fw_dir)
+    subprocess.run(["make", "clean", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir)
     
     # Make with extra args
-    res = subprocess.run(["make", "KCONFIG_CONFIG=" + config_file, "--file", makefile], cwd=fw_dir)
-
-    # if temp_makefile:
-    #     os.remove(makefile)
+    res = subprocess.run(["make", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir)
+    if extra_src:
+        os.remove(fw_dir + 'src/Makefile')
+        shutil.copyfile(fw_dir + 'src/Makefile.bak', fw_dir + 'src/Makefile')
 
     if res.returncode == 0:
         compiled_bin = os.path.join(fw_dir, "out", f"{args.fw}.bin")

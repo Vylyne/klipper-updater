@@ -3,10 +3,10 @@
         "chipset": "stm32f103xe",
         "katapult": {
             "installed": true,
-            "extra_args": ""
+            "extra_src": ""
         },
         "klipper": {
-            "extra_args": ""
+            "extra_src": ""
         },
         "serials": [
             "36FFD9054755303923891357-if00"
@@ -16,10 +16,10 @@
         "chipset": "stm32g0b1xx",
         "katapult": {
             "installed": true,
-            "extra_args": ""
+            "extra_src": ""
         },
         "klipper": {
-            "extra_args": ""
+            "extra_src": ""
         },
         "serials": [
             "1F002A000A50304158373420-if00"
@@ -29,10 +29,10 @@
         "chipset": "stm32g0b1xx",
         "katapult": {
             "installed": true,
-            "extra_args": ""
+            "extra_src": ""
         },
         "klipper": {
-            "extra_args": ""
+            "extra_src": ""
         },
         "serials": [
             "110032000450505539323520-if00",
@@ -43,10 +43,10 @@
         "chipset": "rp2040",
         "katapult": {
             "installed": true,
-            "extra_args": ""
+            "extra_src": ""
         },
         "klipper": {
-            "extra_args": ""
+            "extra_src": ""
         },
         "serials": [
             "E6637C05E758A438-if00"
@@ -56,10 +56,10 @@
         "chipset": "stm32f072xb",
         "katapult": {
             "installed": true,
-            "extra_args": ""
+            "extra_src": ""
         },
         "klipper": {
-            "extra_args": "src-$(CONFIG_MACH_STM32F072) += buffer.c"
+            "extra_src": "src-$(CONFIG_MACH_STM32F072) += buffer.c"
         },
         "serials": [
             "4C0033000957465331323720-if00"
