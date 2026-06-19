@@ -34,7 +34,6 @@ def get_extra_src(mcu_type, fw):
     data = load_data()
     if mcu_type in data and fw in data[mcu_type]:
         extra_src = data[mcu_type][fw].get("extra_src", "")
-        print(F"Extra args: '{extra_src}'")
         return extra_src
     return ""
 
@@ -106,11 +105,10 @@ def build_fw(args):
         make_menuconfig(args)
 
     extra_src = get_extra_src(args.type, args.fw)
+    # if we have extra src files to include backup make file and add line.
     if extra_src:
         with open(fw_dir + '/src/Makefile', 'r') as file:
             makefile_original = file.readlines()
-
-        shutil.copyfile(fw_dir + '/src/Makefile', fw_dir + '/src/Makefile.bak')
         with open(fw_dir + '/src/Makefile', 'a') as file:
             file.write(extra_src)
     
@@ -119,11 +117,11 @@ def build_fw(args):
     # Make clean
     subprocess.run(["make", "clean", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir)
     
-    # Make with extra args
+    # Make fw
     res = subprocess.run(["make", "KCONFIG_CONFIG=" + config_file], cwd=fw_dir)
+    
+    # restore Makefile if edited
     if extra_src:
-        # os.remove(fw_dir + '/src/Makefile')
-        # shutil.copyfile(fw_dir + '/src/Makefile.bak', fw_dir + '/src/Makefile')
         with open(fw_dir + '/src/Makefile', 'w') as file:
             file.writelines(makefile_original)
 
