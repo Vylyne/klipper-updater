@@ -112,7 +112,7 @@ def build_fw(args):
         shutil.copyfile(makefile, makefile + ".tmp")
         makefile = makefile + ".tmp"
         with open(makefile, 'a') as file:
-            file.write('input')
+            file.write(extra_args)
         temp_makefile = True
     
     print(f"Building {args.fw} for {args.type}...")
