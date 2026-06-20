@@ -263,16 +263,50 @@ def build_fw_cmd(args):
     if do_build(args.type, args.fw) is None:
         sys.exit(1)
 
+def find_type_for_serial(serial, data):
+    """Returns the list of MCU type names that have this serial tracked.
+    Normally 0 or 1; more than 1 would mean the same serial got added under
+    two types by mistake."""
+    return [t for t, cfg in data.items() if serial in cfg.get("serials", [])]
+
 def flash_fw_cmd(args):
     data = load_data()
-    if args.type not in data:
-        print(f"ERROR: MCU Type '{args.type}' not tracked.", file=sys.stderr)
-        sys.exit(1)
-    if args.serial not in data[args.type]["serials"]:
-        print(f"ERROR: serial '{args.serial}' is not tracked under '{args.type}'.", file=sys.stderr)
-        sys.exit(1)
-    chipset = data[args.type]["chipset"]
-    ok = flash_device(args.type, chipset, args.serial)
+    if args.type:
+        if args.type not in data:
+            print(f"ERROR: MCU Type '{args.type}' not tracked.", file=sys.stderr)
+            sys.exit(1)
+        if args.serial not in data[args.type]["serials"]:
+            # If it's already tracked under a DIFFERENT type, that's a much
+            # stronger signal of "wrong -t" than "this is just a new device" -
+            # refuse outright rather than offering to add it here too.
+            elsewhere = find_type_for_serial(args.serial, data)
+            if elsewhere:
+                print(f"ERROR: serial '{args.serial}' is already tracked under "
+                      f"'{elsewhere[0]}', not '{args.type}'. Did you mean -t {elsewhere[0]}?", file=sys.stderr)
+                sys.exit(1)
+            resp = input(f"Serial '{args.serial}' isn't tracked under '{args.type}' yet. "
+                          f"Add it now? [y/N]: ").strip().lower()
+            if resp not in ('y', 'yes'):
+                print("Aborted.")
+                sys.exit(1)
+            data[args.type]["serials"].append(args.serial)
+            save_data(data)
+            print(f"Added serial {args.serial} to {args.type}")
+        mcu_type = args.type
+    else:
+        matches = find_type_for_serial(args.serial, data)
+        if not matches:
+            print(f"ERROR: serial '{args.serial}' isn't tracked under any MCU type.", file=sys.stderr)
+            sys.exit(1)
+        if len(matches) > 1:
+            print(f"ERROR: serial '{args.serial}' is tracked under multiple types "
+                  f"({', '.join(matches)}) - pass -t to disambiguate.", file=sys.stderr)
+            sys.exit(1)
+        mcu_type = matches[0]
+        print(f"Resolved serial {args.serial} -> type '{mcu_type}'")
+
+    chipset = data[mcu_type]["chipset"]
+    ok = flash_device(mcu_type, chipset, args.serial)
     sys.exit(0 if ok else 1)
 
 def update_all(args):
@@ -440,8 +474,8 @@ def main():
     parser_build.set_defaults(func=build_fw_cmd)
 
     parser_flash = subparsers.add_parser("flash", help="Flash a single tracked device with its built klipper.bin")
-    parser_flash.add_argument("-t", "--type", required=True, help="MCU Type Name")
-    parser_flash.add_argument("-s", "--serial", required=True, help="Device serial (must already be tracked under this type)")
+    parser_flash.add_argument("-t", "--type", default=None, help="MCU Type Name (optional - inferred from the serial if omitted)")
+    parser_flash.add_argument("-s", "--serial", required=True, help="Device serial (must already be tracked)")
     parser_flash.set_defaults(func=flash_fw_cmd)
 
     parser_update = subparsers.add_parser("update-all", help="Build + flash klipper for every tracked MCU type/device, stopping/restarting klipper around it")
