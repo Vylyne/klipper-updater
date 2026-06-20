@@ -110,12 +110,8 @@ def do_menuconfig(mcu_type, fw):
     print(f"Making config for {mcu_type} with {fw}")
     input("Press Enter to continue to menuconfig...")
 
-    env = os.environ.copy()
-    env["KCONFIG_CONFIG"] = config_file
-    # -e: let the KCONFIG_CONFIG we just set win over Klipper's own
-    # "export KCONFIG_CONFIG := $(CURDIR)/.config" line in its top-level
-    # Makefile. Without -e, that line silently overrides whatever we pass in.
-    subprocess.run(["make", "-e", "menuconfig"], cwd=fw_dir, env=env, stdin=sys.stdin, stdout=sys.stdout)
+    kconfig_arg = f"KCONFIG_CONFIG={config_file}"
+    subprocess.run(["make", kconfig_arg, "menuconfig"], cwd=fw_dir, stdin=sys.stdin, stdout=sys.stdout)
 
 def do_build(mcu_type, fw, interactive=True):
     """Builds firmware for one MCU type/fw target. Returns the path to the
@@ -136,14 +132,13 @@ def do_build(mcu_type, fw, interactive=True):
     extra_args = get_extra_args(mcu_type, fw).split()
 
     print(f"Building {fw} for {mcu_type}...")
-    env = os.environ.copy()
-    env["KCONFIG_CONFIG"] = config_file
+    kconfig_arg = f"KCONFIG_CONFIG={config_file}"
 
     with apply_makefile_patches(mcu_type, fw, fw_dir):
-        subprocess.run(["make", "-e", "clean"], cwd=fw_dir, env=env)
-        make_cmd = ["make", "-e"] + extra_args
+        subprocess.run(["make", kconfig_arg, "clean"], cwd=fw_dir)
+        make_cmd = ["make", kconfig_arg] + extra_args
         print(f"{make_cmd}")
-        res = subprocess.run(make_cmd, cwd=fw_dir, env=env)
+        res = subprocess.run(make_cmd, cwd=fw_dir)
 
     if res.returncode != 0:
         print("ERROR: Firmware build failed.", file=sys.stderr)
@@ -316,19 +311,103 @@ def update_all(args):
         sys.exit(1)
     print("\nAll MCU types built and flashed successfully.")
 
+def flash_dfu_stm32(fw_bin):
+    """Flashes a .bin to an STM32 device currently sitting in DFU mode, via
+    dfu-util. Used for the very first katapult flash on a brand new board
+    (before it has any bootloader to talk flashtool.py's protocol to)."""
+    print("Looking for STM32 device in DFU mode via dfu-util...")
+    check = subprocess.run(["dfu-util", "-l"], capture_output=True, text=True)
+    if "Found DFU" not in check.stdout:
+        print("ERROR: No DFU device detected. Make sure it's jumpered/button-pressed into DFU mode.", file=sys.stderr)
+        print(check.stdout)
+        return False
+
+    print("DFU device found. Flashing via dfu-util...")
+    res = subprocess.run([
+        "dfu-util", "-a", "0", "-d", "0483:df11",
+        "-D", fw_bin,
+        "-s", "0x08000000:force:mass-erase:leave",
+    ])
+    if res.returncode != 0:
+        print("ERROR: dfu-util flashing failed.", file=sys.stderr)
+        return False
+    print("Flash command sent. Device should reboot into Katapult momentarily.")
+    return True
+
+def find_unassigned_devices(fw_name=None, chipset=None):
+    """Scans /dev/serial/by-id/ for usb-<fw>_<chipset>_<serial> entries whose
+    serial isn't already tracked under any MCU type in mcus.json."""
+    serial_dir = "/dev/serial/by-id"
+    if not os.path.isdir(serial_dir):
+        return []
+
+    data = load_data()
+    known_serials = set()
+    for cfg in data.values():
+        known_serials.update(cfg.get("serials", []))
+
+    results = []
+    for name in os.listdir(serial_dir):
+        if not name.startswith("usb-"):
+            continue
+        parts = name[len("usb-"):].split("_", 2)
+        if len(parts) < 2:
+            continue
+        dev_fw, dev_chipset, dev_serial = (parts[0], parts[1], parts[2]) if len(parts) == 3 else (parts[0], "", parts[1])
+        if fw_name and dev_fw.lower() != fw_name.lower():
+            continue
+        if chipset and dev_chipset != chipset:
+            continue
+        if dev_serial in known_serials:
+            continue
+        results.append({"fw": dev_fw, "chipset": dev_chipset, "serial": dev_serial, "path": os.path.join(serial_dir, name)})
+    return results
+
 def add_mcu(args):
     data = load_data()
     if args.type not in data:
         print(f"ERROR: MCU Type '{args.type}' not tracked. Use 'add-type' first.", file=sys.stderr)
         sys.exit(1)
 
-    do_menuconfig(args.type, "katapult")
-    do_build(args.type, "katapult")
+    chipset = data[args.type]["chipset"]
 
-    print(">>> NOTE: Execute flashing logic here (flash_NewSTM32 / flash_NewRP2040) <<<")
-    print("Scanning for unassigned Katapult devices...")
-    # dev = get_unknown_serials()
-    # if dev: prompt user to add via add_serial()
+    # This builds katapult, launching menuconfig automatically since a brand
+    # new type has no saved .config yet.
+    fw_bin = do_build(args.type, "katapult")
+    if fw_bin is None:
+        print("ERROR: katapult build failed, aborting add-mcu.", file=sys.stderr)
+        sys.exit(1)
+
+    if chipset.startswith("stm32"):
+        ok = flash_dfu_stm32(fw_bin)
+    elif chipset == "rp2040":
+        print("ERROR: RP2040 BOOTSEL flashing isn't wired up here yet - mount it manually "
+              "and copy the .uf2 over, then use 'add-serial' once it enumerates as Katapult.",
+              file=sys.stderr)
+        sys.exit(1)
+    else:
+        print(f"ERROR: don't know how to initial-flash chipset '{chipset}'. Flash katapult "
+              f"manually, then use 'add-serial' once it enumerates.", file=sys.stderr)
+        sys.exit(1)
+
+    if not ok:
+        sys.exit(1)
+
+    print("Waiting a few seconds for the device to enumerate as Katapult...")
+    time.sleep(3)
+    candidates = find_unassigned_devices(fw_name="katapult", chipset=chipset)
+    if not candidates:
+        print(f"No new, unassigned Katapult device found for chipset '{chipset}'. "
+              f"Check `ls /dev/serial/by-id/` and use 'add-serial' manually.")
+        return
+
+    for dev in candidates:
+        resp = input(f"Found unassigned Katapult device: {dev['serial']} ({dev['path']}). "
+                      f"Add it to '{args.type}'? [y/N]: ").strip().lower()
+        if resp in ('y', 'yes'):
+            data[args.type]["serials"].append(dev["serial"])
+            save_data(data)
+            print(f"Added serial {dev['serial']} to {args.type}")
 
 # --- CLI PARSER SETUP ---
 
