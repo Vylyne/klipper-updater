@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import contextlib
+import glob
 
 # --- CONFIGURATION ---
 SETTINGS_PATH = os.path.expanduser("~/mcus")
@@ -19,7 +20,7 @@ KLIPPER_SERVICE = "klipper"
 # Device naming under /dev/serial/by-id/usb-<FW>_<chipset>_<serial>. Confirm
 # the casing matches what `ls /dev/serial/by-id/` actually shows you - it's
 # been seen as both "usb-klipper_..." and "usb-Klipper_..." depending on board.
-KLIPPER_FW_NAME = "klipper"
+KLIPPER_FW_NAME = "Klipper"
 KATAPULT_FW_NAME = "katapult"
 
 BOOTLOADER_WAIT_TIMEOUT = 15  # seconds to wait for a device to re-enumerate after a bootloader request
@@ -159,6 +160,9 @@ def do_build(mcu_type, fw, interactive=True):
 
 def device_path(fw_name, chipset, serial):
     return f"/dev/serial/by-id/usb-{fw_name}_{chipset}_{serial}"
+
+def find_device_path(chipset, serial):
+    return glob.glob(f"/dev/serial/by-id/usb-*_{chipset}_{serial}")[0]
 
 def wait_for_path(path, timeout=BOOTLOADER_WAIT_TIMEOUT):
     waited = 0.0
