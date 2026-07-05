@@ -275,6 +275,29 @@ def find_type_for_serial(serial, data):
 
 def flash_fw_cmd(args):
     data = load_data()
+
+    if not args.serial and not args.type:
+        print("ERROR: provide -s <serial>, -t <type>, or both.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.type and not args.serial:
+        if args.type not in data:
+            print(f"ERROR: MCU Type '{args.type}' not tracked.", file=sys.stderr)
+            sys.exit(1)
+        serials = data[args.type]["serials"]
+        if not serials:
+            print(f"No serials tracked under '{args.type}'.", file=sys.stderr)
+            sys.exit(1)
+        chipset = data[args.type]["chipset"]
+        failures = []
+        for serial in serials:
+            if not flash_device(args.type, chipset, serial):
+                failures.append(serial)
+        if failures:
+            print(f"Failures: {', '.join(failures)}", file=sys.stderr)
+            sys.exit(1)
+        return
+    
     if args.type:
         if args.type not in data:
             print(f"ERROR: MCU Type '{args.type}' not tracked.", file=sys.stderr)
@@ -479,7 +502,7 @@ def main():
 
     parser_flash = subparsers.add_parser("flash", help="Flash a single tracked device with its built klipper.bin")
     parser_flash.add_argument("-t", "--type", default=None, help="MCU Type Name (optional - inferred from the serial if omitted)")
-    parser_flash.add_argument("-s", "--serial", required=True, help="Device serial (must already be tracked)")
+    parser_flash.add_argument("-s", "--serial", default=None, help="Device serial (must already be tracked)")
     parser_flash.set_defaults(func=flash_fw_cmd)
 
     parser_update = subparsers.add_parser("update-all", help="Build + flash klipper for every tracked MCU type/device, stopping/restarting klipper around it")
