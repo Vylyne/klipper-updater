@@ -260,6 +260,37 @@ def add_serial(args):
     else:
         print(f"Serial {args.serial} already exists under {args.type}")
 
+def remove_mcu_type(args):
+    data = load_data()
+    if args.type not in data:
+        print(f"ERROR: MCU Type '{args.type}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+
+    if not args.force:
+        num_serials = len(data[args.type].get("serials", []))
+        resp = input(f"Remove type '{args.type}' and its {num_serials} tracked serial(s)? [y/N]: ").strip().lower()
+        if resp not in ('y', 'yes'):
+            print("Aborted.")
+            return
+
+    del data[args.type]
+    save_data(data)
+    print(f"Removed MCU Type: {args.type}")
+
+def remove_serial(args):
+    data = load_data()
+    if args.type not in data:
+        print(f"ERROR: MCU Type '{args.type}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.serial not in data[args.type]["serials"]:
+        print(f"Serial {args.serial} isn't tracked under {args.type} - nothing to do.")
+        return
+
+    data[args.type]["serials"].remove(args.serial)
+    save_data(data)
+    print(f"Removed serial {args.serial} from {args.type}")
+
 def make_menuconfig_cmd(args):
     do_menuconfig(args.type, args.fw)
 
@@ -489,6 +520,16 @@ def main():
     parser_serial.add_argument("-t", "--type", required=True, help="MCU Type Name")
     parser_serial.add_argument("-s", "--serial", required=True, help="The device serial string")
     parser_serial.set_defaults(func=add_serial)
+
+    parser_rm_type = subparsers.add_parser("remove-type", help="Remove an MCU type configuration and its tracked serials")
+    parser_rm_type.add_argument("-t", "--type", required=True, help="MCU Type Name")
+    parser_rm_type.add_argument("--force", action="store_true", help="Skip the confirmation prompt")
+    parser_rm_type.set_defaults(func=remove_mcu_type)
+
+    parser_rm_serial = subparsers.add_parser("remove-serial", help="Remove a tracked serial from an MCU type")
+    parser_rm_serial.add_argument("-t", "--type", required=True, help="MCU Type Name")
+    parser_rm_serial.add_argument("-s", "--serial", required=True, help="The device serial string")
+    parser_rm_serial.set_defaults(func=remove_serial)
 
     parser_menu = subparsers.add_parser("menuconfig", help="Launch make menuconfig for a specific target")
     parser_menu.add_argument("-t", "--type", required=True, help="MCU Type Name")
