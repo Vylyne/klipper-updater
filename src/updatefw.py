@@ -311,6 +311,13 @@ def flash_fw_cmd(args):
         print("ERROR: provide -s <serial>, -t <type>, or both.", file=sys.stderr)
         sys.exit(1)
 
+    if not args.yes:
+        resp = input(f"Flashing requires stopping the '{KLIPPER_SERVICE}' service (aborts any "
+                      f"active print!). Continue? [y/N]: ").strip().lower()
+        if resp not in ('y', 'yes'):
+            print("Aborted.")
+            return
+
     if args.type and not args.serial:
         if args.type not in data:
             print(f"ERROR: MCU Type '{args.type}' not tracked.", file=sys.stderr)
@@ -321,9 +328,13 @@ def flash_fw_cmd(args):
             sys.exit(1)
         chipset = data[args.type]["chipset"]
         failures = []
-        for serial in serials:
-            if not flash_device(args.type, chipset, serial):
-                failures.append(serial)
+        klipper_service("stop")
+        try:
+            for serial in serials:
+                if not flash_device(args.type, chipset, serial):
+                    failures.append(serial)
+        finally:
+            klipper_service("start")
         if failures:
             print(f"Failures: {', '.join(failures)}", file=sys.stderr)
             sys.exit(1)
@@ -364,7 +375,11 @@ def flash_fw_cmd(args):
         print(f"Resolved serial {args.serial} -> type '{mcu_type}'")
 
     chipset = data[mcu_type]["chipset"]
-    ok = flash_device(mcu_type, chipset, args.serial)
+    klipper_service("stop")
+    try:
+        ok = flash_device(mcu_type, chipset, args.serial)
+    finally:
+        klipper_service("start")
     sys.exit(0 if ok else 1)
 
 def update_all(args):
@@ -501,6 +516,275 @@ def add_mcu(args):
             save_data(data)
             print(f"Added serial {dev['serial']} to {args.type}")
 
+# --- INTERACTIVE MENU ---
+
+def prompt_choice(title, options, allow_cancel=True):
+    """Prints a numbered list and loops on input() until a valid selection is
+    made. Returns the 0-based index into `options`, or None if the user
+    cancels (enters 0, when allow_cancel is True)."""
+    while True:
+        print(f"\n{title}:")
+        for i, opt in enumerate(options, 1):
+            print(f"  {i}. {opt}")
+        if allow_cancel:
+            print("  0. Cancel")
+        raw = input("> ").strip()
+        if allow_cancel and raw == "0":
+            return None
+        try:
+            choice = int(raw)
+        except ValueError:
+            print("Please enter a number.")
+            continue
+        if 1 <= choice <= len(options):
+            return choice - 1
+        print("Out of range, try again.")
+
+def prompt_yn(prompt, default=False):
+    suffix = "[Y/n]" if default else "[y/N]"
+    raw = input(f"{prompt} {suffix}: ").strip().lower()
+    if not raw:
+        return default
+    return raw in ('y', 'yes')
+
+def prompt_nonempty(prompt):
+    while True:
+        val = input(f"{prompt}: ").strip()
+        if val:
+            return val
+        print("This can't be blank.")
+
+def pick_mcu_type(data, allow_new=True):
+    """Numbered picker over existing MCU types. If allow_new, appends an
+    "Add a new MCU type" entry that runs the add-type flow inline and returns
+    the freshly created name - so a flow needing a type never dead-ends just
+    because none exist yet. Returns None on cancel."""
+    types = sorted(data.keys())
+    if not types:
+        if not allow_new:
+            print("No MCU types configured yet.")
+            return None
+        print("No MCU types configured yet - let's add one.")
+        return menu_add_mcu_type()
+
+    options = [f"{t}  (chipset={data[t].get('chipset', '?')}, "
+               f"{len(data[t].get('serials', []))} serial(s))" for t in types]
+    if allow_new:
+        options.append("+ Add a new MCU type")
+    idx = prompt_choice("Select MCU type", options)
+    if idx is None:
+        return None
+    if allow_new and idx == len(types):
+        return menu_add_mcu_type()
+    return types[idx]
+
+def pick_fw_target():
+    idx = prompt_choice("Select firmware target", ["klipper", "katapult"])
+    if idx is None:
+        return None
+    return ["klipper", "katapult"][idx]
+
+def pick_serial_for_type(mcu_type, data):
+    """Lists tracked serials plus any untracked devices currently detected on
+    the bus for this type's chipset, plus a manual-entry option. Used by the
+    Flash flow, where either a tracked or not-yet-tracked device is valid."""
+    tracked = data[mcu_type].get("serials", [])
+    chipset = data[mcu_type].get("chipset", "")
+    unassigned = find_unassigned_devices(chipset=chipset)
+    options = [f"{s} (tracked)" for s in tracked]
+    options += [f"{d['serial']} (untracked, detected on bus)" for d in unassigned]
+    options.append("Enter serial manually")
+    idx = prompt_choice(f"Select a device under '{mcu_type}'", options)
+    if idx is None:
+        return None
+    if idx < len(tracked):
+        return tracked[idx]
+    if idx < len(tracked) + len(unassigned):
+        return unassigned[idx - len(tracked)]["serial"]
+    return prompt_nonempty("Serial string")
+
+def pick_tracked_serial(mcu_type, data):
+    """Lists only already-tracked serials - used by Remove-serial, where the
+    target must already be tracked."""
+    tracked = data[mcu_type].get("serials", [])
+    if not tracked:
+        print(f"No serials tracked under '{mcu_type}'.")
+        return None
+    idx = prompt_choice(f"Select a serial to remove from '{mcu_type}'", tracked)
+    if idx is None:
+        return None
+    return tracked[idx]
+
+def list_mcu_status():
+    """Read-only view: for each tracked type/serial, checks whether it's
+    currently enumerated as Klipper or Katapult(bootloader) on the bus."""
+    data = load_data()
+    if not data:
+        print("No MCU types configured yet.")
+        return
+    for mcu_type in sorted(data):
+        cfg = data[mcu_type]
+        chipset = cfg.get("chipset", "?")
+        serials = cfg.get("serials", [])
+        print(f"\n{mcu_type}  (chipset={chipset})")
+        if not serials:
+            print("  (no tracked serials)")
+            continue
+        for serial in serials:
+            if os.path.exists(device_path(KLIPPER_FW_NAME, chipset, serial)):
+                status = "online (klipper)"
+            elif os.path.exists(device_path(KATAPULT_FW_NAME, chipset, serial)):
+                status = "online (katapult/bootloader)"
+            else:
+                status = "offline"
+            print(f"  - {serial}: {status}")
+
+def call_action(func, ns):
+    """Invokes an existing argparse action function from the menu with a
+    manually built Namespace. Catches SystemExit so a failed sub-action
+    (build failure, flash failure, aborted prompt, etc.) returns control to
+    the menu loop instead of ending the whole interactive session - the
+    function's own print statements already explain what happened.
+    KeyboardInterrupt is deliberately not caught here; it propagates up to
+    run_menu()'s handler and ends the session, matching normal ^C convention."""
+    try:
+        func(ns)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        if code not in (0, None):
+            print("(action did not complete successfully - see messages above)")
+
+def menu_add_mcu_type():
+    type_name = prompt_nonempty("MCU type name (e.g. bttebb36)")
+    chipset = prompt_nonempty("Chipset (e.g. stm32g0b1xx)")
+    klipper_args = input("Extra klipper make args (blank for none): ").strip()
+    katapult_args = input("Extra katapult make args (blank for none): ").strip()
+    no_katapult = prompt_yn("Skip katapult (no bootloader)?", default=False)
+    ns = argparse.Namespace(type=type_name, chipset=chipset, klipper_args=klipper_args,
+                             katapult_args=katapult_args, no_katapult=no_katapult, force=False)
+    call_action(add_mcu_type, ns)
+    return type_name
+
+def menu_remove_mcu_type():
+    data = load_data()
+    mcu_type = pick_mcu_type(data, allow_new=False)
+    if mcu_type is None:
+        return
+    call_action(remove_mcu_type, argparse.Namespace(type=mcu_type, force=False))
+
+def menu_add_serial():
+    data = load_data()
+    mcu_type = pick_mcu_type(data, allow_new=True)
+    if mcu_type is None:
+        return
+    data = load_data()  # refresh - pick_mcu_type may have just created this type
+    chipset = data.get(mcu_type, {}).get("chipset", "")
+    unassigned = find_unassigned_devices(chipset=chipset)
+    options = [f"{d['serial']} (detected on bus)" for d in unassigned]
+    options.append("Enter serial manually")
+    idx = prompt_choice(f"Select a serial to add to '{mcu_type}'", options)
+    if idx is None:
+        return
+    serial = unassigned[idx]["serial"] if idx < len(unassigned) else prompt_nonempty("Serial string")
+    call_action(add_serial, argparse.Namespace(type=mcu_type, serial=serial))
+
+def menu_remove_serial():
+    data = load_data()
+    mcu_type = pick_mcu_type(data, allow_new=False)
+    if mcu_type is None:
+        return
+    serial = pick_tracked_serial(mcu_type, data)
+    if serial is None:
+        return
+    call_action(remove_serial, argparse.Namespace(type=mcu_type, serial=serial))
+
+def menu_add_mcu():
+    data = load_data()
+    mcu_type = pick_mcu_type(data, allow_new=True)
+    if mcu_type is None:
+        return
+    call_action(add_mcu, argparse.Namespace(type=mcu_type))
+
+def menu_menuconfig():
+    data = load_data()
+    mcu_type = pick_mcu_type(data, allow_new=True)
+    if mcu_type is None:
+        return
+    fw = pick_fw_target()
+    if fw is None:
+        return
+    call_action(make_menuconfig_cmd, argparse.Namespace(type=mcu_type, fw=fw))
+
+def menu_build():
+    data = load_data()
+    mcu_type = pick_mcu_type(data, allow_new=True)
+    if mcu_type is None:
+        return
+    fw = pick_fw_target()
+    if fw is None:
+        return
+    call_action(build_fw_cmd, argparse.Namespace(type=mcu_type, fw=fw))
+
+def menu_flash():
+    data = load_data()
+    mcu_type = pick_mcu_type(data, allow_new=False)
+    if mcu_type is None:
+        return
+    serials = data.get(mcu_type, {}).get("serials", [])
+    scope_options = ["Flash every tracked serial under this type"]
+    if serials:
+        scope_options.append("Flash one specific device")
+    idx = prompt_choice(f"Flash scope for '{mcu_type}'", scope_options)
+    if idx is None:
+        return
+    if idx == 0:
+        ns = argparse.Namespace(type=mcu_type, serial=None, yes=False)
+    else:
+        serial = pick_serial_for_type(mcu_type, data)
+        if serial is None:
+            return
+        ns = argparse.Namespace(type=mcu_type, serial=serial, yes=False)
+    call_action(flash_fw_cmd, ns)
+
+def menu_update_all():
+    call_action(update_all, argparse.Namespace(yes=False))
+
+def run_menu():
+    menu_items = [
+        ("List MCU types / status", list_mcu_status),
+        ("Add MCU type", menu_add_mcu_type),
+        ("Remove MCU type", menu_remove_mcu_type),
+        ("Add serial to existing type", menu_add_serial),
+        ("Remove serial from a type", menu_remove_serial),
+        ("Guided add-mcu (new physical board)", menu_add_mcu),
+        ("Menuconfig", menu_menuconfig),
+        ("Build firmware", menu_build),
+        ("Flash device(s)", menu_flash),
+        ("Update all (rebuild + reflash everything)", menu_update_all),
+    ]
+    try:
+        while True:
+            print("\n=== Klipper/Katapult Firmware Manager ===")
+            for i, (label, _) in enumerate(menu_items, 1):
+                print(f"  {i}. {label}")
+            print("  0. Exit")
+            raw = input("> ").strip()
+            if raw == "0":
+                print("Goodbye.")
+                return
+            try:
+                choice = int(raw)
+            except ValueError:
+                print("Please enter a number.")
+                continue
+            if not (1 <= choice <= len(menu_items)):
+                print("Out of range, try again.")
+                continue
+            menu_items[choice - 1][1]()
+            input("\nPress Enter to continue...")
+    except (KeyboardInterrupt, EOFError):
+        print("\nExiting.")
+
 # --- CLI PARSER SETUP ---
 
 def main():
@@ -544,6 +828,7 @@ def main():
     parser_flash = subparsers.add_parser("flash", help="Flash a single tracked device with its built klipper.bin")
     parser_flash.add_argument("-t", "--type", default=None, help="MCU Type Name (optional - inferred from the serial if omitted)")
     parser_flash.add_argument("-s", "--serial", default=None, help="Device serial (must already be tracked)")
+    parser_flash.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt")
     parser_flash.set_defaults(func=flash_fw_cmd)
 
     parser_update = subparsers.add_parser("update-all", help="Build + flash klipper for every tracked MCU type/device, stopping/restarting klipper around it")
@@ -553,6 +838,10 @@ def main():
     parser_addmcu = subparsers.add_parser("add-mcu", help="Interactive routine to setup, build, and flash a new MCU")
     parser_addmcu.add_argument("-t", "--type", required=True, help="MCU Type Name")
     parser_addmcu.set_defaults(func=add_mcu)
+
+    if len(sys.argv) == 1:
+        run_menu()
+        return
 
     args = parser.parse_args()
     args.func(args)
