@@ -1,5 +1,10 @@
 # Rendered by install.sh - %PLACEHOLDERS% are substituted there.
-# Installed to /etc/systemd/system/klipper_updater_agent.service
+# Installed to /etc/systemd/system/klipper-updater.service
+#
+# The unit name is not cosmetic: Moonraker only accepts a `managed_services`
+# value matching the [update_manager <name>] section, `klipper`, or `moonraker`.
+# So the unit has to be called klipper-updater for Moonraker to be permitted to
+# restart it after an update.
 
 [Unit]
 Description=Klipper Updater Moonraker Agent
@@ -18,7 +23,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%INSTALL_DIR%/src
 ExecStart=%PYTHON% -m klipper_updater.agent \
     --socket %PRINTER_DATA%/comms/moonraker.sock \
-    --log %PRINTER_DATA%/logs/klipper_updater_agent.log
+    --log %PRINTER_DATA%/logs/klipper-updater.log
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -29,6 +34,11 @@ KillSignal=SIGTERM
 #   ExecStopPost=/bin/sh -c 'systemctl is-active --quiet klipper || systemctl start klipper'
 # plus a SIGTERM handler that defers exit while a flash is in progress - because
 # `systemctl restart` mid-flash would otherwise brick a board.
+#
+# The log lands in printer_data/logs so it sits with the others and is reachable
+# through Moonraker's file manager. Note it will NOT appear in Mainsail's
+# Logfiles panel: that panel renders a hardcoded list (klippy, moonraker,
+# crowsnest, mmu, sonar), not whatever happens to be in the directory.
 
 [Install]
 WantedBy=multi-user.target

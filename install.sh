@@ -9,7 +9,12 @@ KATAPULT_PATH="${KATAPULT_PATH:-${HOME}/katapult}"
 PRINTER_DATA="${PRINTER_DATA:-${HOME}/printer_data}"
 INSTALL_PATH="${INSTALL_PATH:-${HOME}/klipper-updater}"
 SETTINGS_PATH="${SETTINGS_PATH:-${HOME}/mcus}"
-SERVICE_NAME="klipper_updater_agent"
+# Must match the [update_manager <name>] section in
+# scripts/moonraker-update-manager.conf. Moonraker only permits a
+# `managed_services` value equal to the section name, `klipper`, or `moonraker`,
+# so the unit name and the section name have to agree.
+SERVICE_NAME="klipper-updater"
+LEGACY_SERVICE_NAME="klipper_updater_agent"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
 
 set -eu
@@ -84,6 +89,39 @@ print(f"[CONFIG] {len(reg)} MCU type(s), {len(reg.all_serials())} tracked serial
     fi
 }
 
+function migrate_legacy_service {
+    # The unit was originally called klipper_updater_agent, which Moonraker
+    # rejects as a managed_services value (it only allows the update_manager
+    # section name, klipper, or moonraker). Clean up the old one so there aren't
+    # two units racing for the same socket.
+    local legacy="/etc/systemd/system/${LEGACY_SERVICE_NAME}.service"
+    if [ -f "${legacy}" ]; then
+        echo "[MIGRATE] Removing the old ${LEGACY_SERVICE_NAME} service..."
+        sudo systemctl stop "${LEGACY_SERVICE_NAME}.service" 2>/dev/null || true
+        sudo systemctl disable "${LEGACY_SERVICE_NAME}.service" 2>/dev/null || true
+        sudo rm -f "${legacy}"
+        sudo systemctl daemon-reload
+        printf "[MIGRATE] Removed.\n\n"
+    fi
+
+    local asvc="${PRINTER_DATA}/moonraker.asvc"
+    if [ -f "${asvc}" ] && grep -qxF "${LEGACY_SERVICE_NAME}" "${asvc}"; then
+        echo "[MIGRATE] Dropping stale ${LEGACY_SERVICE_NAME} from moonraker.asvc..."
+        sed -i "/^${LEGACY_SERVICE_NAME}\$/d" "${asvc}"
+        printf "[MIGRATE] Done.\n\n"
+    fi
+
+    # Repair a moonraker.conf written by an earlier install: the bad
+    # managed_services value makes Moonraker refuse to load the whole section.
+    local conf="${PRINTER_DATA}/config/moonraker.conf"
+    if [ -f "${conf}" ] && grep -q "^managed_services:[[:space:]]*${LEGACY_SERVICE_NAME}[[:space:]]*\$" "${conf}"; then
+        echo "[MIGRATE] Fixing managed_services in moonraker.conf..."
+        cp "${conf}" "${conf}.bak-klipper-updater"
+        sed -i "s/^managed_services:[[:space:]]*${LEGACY_SERVICE_NAME}[[:space:]]*\$/managed_services: ${SERVICE_NAME}/" "${conf}"
+        printf "[MIGRATE] Fixed (backup at %s.bak-klipper-updater).\n\n" "${conf}"
+    fi
+}
+
 function install_service {
     echo "[INSTALL] Installing systemd unit ${SERVICE_NAME}.service..."
     local tmp
@@ -92,7 +130,7 @@ function install_service {
         -e "s|%INSTALL_DIR%|${INSTALL_PATH}|g" \
         -e "s|%PRINTER_DATA%|${PRINTER_DATA}|g" \
         -e "s|%PYTHON%|${PYTHON_BIN}|g" \
-        "${INSTALL_PATH}/scripts/klipper_updater_agent.service" > "${tmp}"
+        "${INSTALL_PATH}/scripts/${SERVICE_NAME}.service" > "${tmp}"
 
     sudo cp "${tmp}" "/etc/systemd/system/${SERVICE_NAME}.service"
     rm -f "${tmp}"
@@ -156,7 +194,9 @@ function print_next_steps {
      -H 'Content-Type: application/json' \\
      -d '{"agent":"klipper_updater","method":"fw.status","arguments":{}}'
 
- Logs:  ${PRINTER_DATA}/logs/klipper_updater_agent.log
+ Logs:   ${PRINTER_DATA}/logs/klipper-updater.log
+         (not in Mainsail's Logfiles panel - that lists a fixed set - but it is
+          downloadable through Moonraker's file manager)
  Status: sudo systemctl status ${SERVICE_NAME}
 
  The CLI is unchanged and still works:  ${INSTALL_PATH}/src/updatefw.py status
@@ -175,6 +215,7 @@ EOF
 preflight_checks
 check_paths
 check_config
+migrate_legacy_service
 install_service
 add_asvc
 add_update_manager
