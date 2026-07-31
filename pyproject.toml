@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "klipper-updater"
+version = "0.9.0"
+description = "Klipper/Katapult firmware management with a Moonraker agent and Mainsail UI"
+readme = "README.md"
+requires-python = ">=3.9"
+# Deliberately empty. See docs/ - the agent talks to Moonraker over a unix
+# socket with nothing but the stdlib, and kconfiglib is loaded out of the
+# klipper/katapult source trees rather than pip (a PyPI copy would disagree
+# with klipper's locally patched one).
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-timeout", "ruff", "mypy"]
+
+[project.scripts]
+updatefw = "klipper_updater.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501", # line length is handled by the formatter, not worth failing CI over
+    # PEP 604 (`X | None`) is only safe here because every module has
+    # `from __future__ import annotations`. The runtime target is Python 3.9,
+    # where `Optional[X]` works in every position - including any spot where an
+    # annotation does get evaluated. Keeping the explicit typing form means a
+    # future edit that drops a `__future__` import can't turn into a
+    # TypeError at import time on the printer.
+    "UP007",
+    "UP045",
+]
+
+[tool.mypy]
+# Deliberately no `python_version = "3.9"`: current mypy refuses to target
+# anything below 3.10. The real 3.9 guarantee comes from CI actually running the
+# test suite on a 3.9 interpreter, which is a stronger check anyway.
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+timeout = 60
