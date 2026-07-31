@@ -75,13 +75,21 @@ class FakeMoonraker:
     def __init__(self, sock: socket.socket) -> None:
         self.sock = sock
         self.buffer = bytearray()
+        # Parsed but not yet handed out. unframe() drains *every* complete
+        # message from the buffer, so anything beyond the one we return has to be
+        # kept - dropping it made the next read block on data that had already
+        # arrived, which is precisely the coalescing case these tests cover.
+        self.parsed: list[dict] = []
 
     def read_message(self, timeout: float = 5.0) -> dict:
         self.sock.settimeout(timeout)
         while True:
-            msgs = unframe(self.buffer)
-            if msgs:
-                return json.loads(msgs[0])
+            if self.parsed:
+                return self.parsed.pop(0)
+            for raw in unframe(self.buffer):
+                self.parsed.append(json.loads(raw))
+            if self.parsed:
+                continue
             chunk = self.sock.recv(65536)
             if not chunk:
                 raise AssertionError("agent closed the socket")
@@ -92,6 +100,35 @@ class FakeMoonraker:
 
     def send_raw(self, data: bytes) -> None:
         self.sock.sendall(data)
+
+
+def test_the_harness_itself_does_not_drop_coalesced_messages():
+    """Regression test for the harness, not the peer.
+
+    read_message() used to return unframe()[0] and discard the rest, so two
+    replies arriving in one recv() lost the second - a flake that only showed up
+    when the kernel happened to coalesce the writes. Driven by pre-filling the
+    buffer so it fails deterministically rather than by luck.
+    """
+    class _StubSocket:
+        """Only settimeout is reached; recv would mean the queue logic failed."""
+
+        def settimeout(self, _timeout):
+            pass
+
+        def recv(self, _size):
+            raise AssertionError("read_message hit the socket instead of the queue")
+
+    harness = FakeMoonraker.__new__(FakeMoonraker)
+    harness.sock = _StubSocket()
+    harness.buffer = bytearray(
+        frame({"jsonrpc": "2.0", "id": 1, "result": "first"})
+        + frame({"jsonrpc": "2.0", "id": 2, "result": "second"})
+    )
+    harness.parsed = []
+
+    assert harness.read_message()["id"] == 1
+    assert harness.read_message()["id"] == 2
 
 
 @pytest.fixture
