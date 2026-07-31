@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from klipper_updater import flash as flash_mod
@@ -16,7 +18,11 @@ from klipper_updater.flash import (
     flash_katapult,
 )
 
-from .conftest import make_device
+from .conftest import cmd_tokens, make_device
+
+
+def _cmds(events: list) -> list[str]:
+    return [line for stream, line in events if stream == "cmd"]
 
 
 @pytest.fixture
@@ -59,10 +65,10 @@ def test_device_already_in_bootloader_is_flashed_directly(paths, ready, fake_roo
     flash_katapult(
         paths, ready, "board", "chipA", "S1", reporter=lambda s, line: events.append((s, line))
     )
-    cmds = [line for s, line in events if s == "cmd"]
-    assert any("-f" in c for c in cmds)
+    flags = [t for c in (cmd_tokens(x) for x in _cmds(events)) for t in c]
+    assert "-f" in flags
     # No bootloader request needed - it is already there.
-    assert not any("-r" in c for c in cmds)
+    assert "-r" not in flags
     assert any("Flashed S1 successfully" in line for _, line in events)
 
 
@@ -72,11 +78,11 @@ def test_device_running_klipper_gets_a_bootloader_request_first(paths, ready, fa
     flash_katapult(
         paths, ready, "board", "chipA", "S1", reporter=lambda s, line: events.append((s, line))
     )
-    cmds = [line for s, line in events if s == "cmd"]
-    assert any("-r" in c for c in cmds), "should request the bootloader"
+    per_cmd = [cmd_tokens(c) for c in _cmds(events)]
+    assert any("-r" in toks for toks in per_cmd), "should request the bootloader"
     assert any("requesting bootloader" in line for _, line in events)
     # A dry run must still rehearse the write, not stop at the reboot request.
-    assert any("-f" in c for c in cmds), "should still reach the flash step"
+    assert any("-f" in toks for toks in per_cmd), "should still reach the flash step"
     assert any("Flashed S1 successfully" in line for _, line in events)
 
 
@@ -116,8 +122,13 @@ def test_exactly_one_dfu_device_is_flashed(paths, ready, monkeypatch):
         str(paths.bin_file("board", "klipper")),
         reporter=lambda s, line: events.append((s, line)),
     )
-    cmds = [line for s, line in events if s == "cmd"]
-    assert any("dfu-util" in c and "mass-erase" in c for c in cmds)
+    per_cmd = [cmd_tokens(c) for c in _cmds(events)]
+    assert any(
+        toks
+        and os.path.basename(toks[0]) == "dfu-util"
+        and any("mass-erase" in t for t in toks)
+        for toks in per_cmd
+    )
 
 
 def test_missing_binary_for_dfu_raises(paths, ready):

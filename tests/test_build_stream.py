@@ -11,6 +11,8 @@ import pytest
 from klipper_updater.build import run_streamed
 from klipper_updater.errors import OperationCancelled
 
+from .conftest import cmd_tokens
+
 CHILD_MANY = "for i in range(5000):\n    print(i)\n"
 CHILD_SLOW = (
     "import time\n"
@@ -166,7 +168,7 @@ def test_the_command_is_echoed_before_running(tmp_path):
         reporter=lambda s, line: cmds.append(line) if s == "cmd" else None,
     )
     assert len(cmds) == 1
-    assert "-c" in cmds[0]
+    assert "-c" in cmd_tokens(cmds[0])
 
 
 def test_a_missing_executable_is_a_clean_tool_error(tmp_path):

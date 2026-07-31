@@ -8,6 +8,8 @@ from klipper_updater.build import build, read_sidecar, staleness
 from klipper_updater.config import Registry
 from klipper_updater.errors import ConfigNotFoundError, SourceTreeMissingError
 
+from .conftest import cmd_tokens
+
 
 def _registry(paths) -> Registry:
     reg = Registry.load(paths)
@@ -159,7 +161,7 @@ def test_jobs_argument_adds_a_make_flag(paths, settings):
         jobs=4,
         reporter=lambda s, line: cmds.append(line) if s == "cmd" else None,
     )
-    assert any("-j4" in c for c in cmds)
+    assert any("-j4" in cmd_tokens(c) for c in cmds)
 
 
 def test_no_jobs_by_default_matching_the_original(paths, settings):
@@ -178,4 +180,5 @@ def test_no_jobs_by_default_matching_the_original(paths, settings):
         "klipper",
         reporter=lambda s, line: cmds.append(line) if s == "cmd" else None,
     )
-    assert not any("-j" in c for c in cmds)
+    flags = [t for c in cmds for t in cmd_tokens(c)]
+    assert not any(t.startswith("-j") for t in flags)

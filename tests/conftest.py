@@ -64,6 +64,22 @@ def live_registry_text() -> str:
     return LIVE_MCUS_JSON.read_text(encoding="utf-8")
 
 
+def cmd_tokens(cmd_line: str) -> list[str]:
+    """Split an echoed command line into whole tokens.
+
+    Never substring-match for a flag in one of these. The line contains absolute
+    paths, and a temp directory can easily contain the characters you are looking
+    for - GitHub's runners use ``/tmp/pytest-of-runner/...``, in which
+    ``pytest-of-runner`` contains ``-r``. That made an
+    ``assert not any("-r" in c)`` fail against the *directory name* while passing
+    on Windows, where the path is ``pytest-of-Vi``.
+
+    Whitespace splitting is enough: flags never contain spaces, so even a quoted
+    path with a space in it cannot produce a false match.
+    """
+    return cmd_line.split()
+
+
 def make_device(bus_dir: pathlib.Path, fw: str, chipset: str, serial: str) -> pathlib.Path:
     """Create a fake /dev/serial/by-id entry.
 
