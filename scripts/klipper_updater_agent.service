@@ -1,0 +1,34 @@
+# Rendered by install.sh - %PLACEHOLDERS% are substituted there.
+# Installed to /etc/systemd/system/klipper_updater_agent.service
+
+[Unit]
+Description=Klipper Updater Moonraker Agent
+Documentation=https://github.com/Vylyne/klipper-updater
+# Wants, not Requires: a Moonraker restart must not take the agent down. It has
+# its own reconnect loop, and in later phases a build or flash may be in flight.
+After=moonraker.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+User=%USER%
+Group=%USER%
+WorkingDirectory=%INSTALL_DIR%
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=%INSTALL_DIR%/src
+ExecStart=%PYTHON% -m klipper_updater.agent \
+    --socket %PRINTER_DATA%/comms/moonraker.sock \
+    --log %PRINTER_DATA%/logs/klipper_updater_agent.log
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+
+# This agent is read-only: it never stops klipper, so it needs no privileges and
+# no shutdown grace period. When the flash phase lands, this unit gains
+#   TimeoutStopSec=300
+#   ExecStopPost=/bin/sh -c 'systemctl is-active --quiet klipper || systemctl start klipper'
+# plus a SIGTERM handler that defers exit while a flash is in progress - because
+# `systemctl restart` mid-flash would otherwise brick a board.
+
+[Install]
+WantedBy=multi-user.target

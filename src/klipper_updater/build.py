@@ -304,8 +304,34 @@ def makefile_patches(
 # --------------------------------------------------------------------------
 
 
-def git_head(directory: str) -> Optional[str]:
+#: git_head() shells out, and one fw.status call asks about the same two source
+#: trees a dozen times over. A few seconds of staleness is meaningless for a
+#: value that only changes when the user runs `git pull`, and it keeps that call
+#: inside its sub-second budget on a Pi.
+_HEAD_TTL = 5.0
+_head_cache: dict[str, tuple[float, Optional[str]]] = {}
+
+
+def clear_head_cache() -> None:
+    _head_cache.clear()
+
+
+def git_head(directory: str, *, ttl: float = _HEAD_TTL) -> Optional[str]:
     """Short HEAD sha of a source tree, or None if it isn't a git checkout."""
+    key = os.path.abspath(directory)
+    if ttl > 0:
+        hit = _head_cache.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < ttl:
+            return hit[1]
+
+    value = _git_head_uncached(directory)
+    # A plain dict assignment is atomic enough here; the worst case for a race is
+    # two threads both running git, which is harmless.
+    _head_cache[key] = (time.monotonic(), value)
+    return value
+
+
+def _git_head_uncached(directory: str) -> Optional[str]:
     try:
         res = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
