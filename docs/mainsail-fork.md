@@ -100,18 +100,45 @@ git diff upstream/master..upstream/develop -- \
 Locally, before every push:
 
 ```bash
-npm run format      # prettier . --write
 npm run lint:fix    # eslint src --fix
 npm run test:unit   # vitest run
-npm run build       # vite build && build.zip
+npm run build       # vite build (+ build.zip, see below)
+npx prettier --write src/store/server/fwUpdater src/components/panels/Machine/FirmwareUpdaterPanel*
 ```
 
-CI uses the **non-mutating** variants — `format:check` and `lint` — because
-`format`/`lint:fix` would let CI pass by rewriting the code it is policing.
+CI uses the **non-mutating** variants (`--check`, `lint`) — the mutating ones
+would let CI pass by rewriting the code it is meant to police.
 
-`npm run build` already emits `dist/mainsail.zip` via upstream's own `build.zip`
-script, so releases just attach that artifact. Run `npm run i18n-extract` after
-touching `en.json` to confirm every `$t()` key resolves.
+### Two gotchas on a Windows dev box
+
+**Set `core.autocrlf=false` in this clone.** With the global `autocrlf=true`, the
+working tree is CRLF, and Prettier's default `endOfLine: "lf"` then fails **628
+files** — the entire repo, including files you never touched. It looks
+catastrophic and means nothing. Fix once:
+
+```bash
+git config core.autocrlf false
+git rm -r --cached -q . && git reset --hard
+```
+
+**`npm run build` fails at the last step on Windows.** Upstream's `build.zip`
+script shells out to a Unix `zip` binary. The `vite build` itself (including the
+`vite-plugin-checker` TypeScript pass) completes fine — only the packaging step
+fails, and CI on ubuntu has `zip`. To produce the artifact locally anyway, zip
+`dist/` yourself.
+
+### Why CI scopes Prettier
+
+`npm run format:check` covers the whole repo, and **upstream/master does not pass
+its own check** — `CLAUDE.md` and `.github/copilot-instructions.md` fail on a
+pristine checkout. Running it unscoped would go red on inherited debt while
+saying nothing about our code, so `ku-ci.yml` checks only the files this fork
+owns. ESLint *is* run unscoped, because upstream does pass that cleanly, which
+means any error there is genuinely ours.
+
+`npm run build` emits `dist/mainsail.zip` via upstream's own script, so releases
+just attach that artifact. Run `npm run i18n-extract` after touching `en.json` to
+confirm every `$t()` key resolves.
 
 ## Installing on the printer
 
