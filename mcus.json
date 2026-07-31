@@ -3,10 +3,10 @@
         "chipset": "stm32f103xe",
         "katapult": {
             "installed": true,
-            "extra_src": ""
+            "extra_args": ""
         },
         "klipper": {
-            "extra_src": ""
+            "extra_args": ""
         },
         "serials": [
             "36FFD9054755303923891357-if00"
@@ -16,10 +16,10 @@
         "chipset": "stm32g0b1xx",
         "katapult": {
             "installed": true,
-            "extra_src": ""
+            "extra_args": ""
         },
         "klipper": {
-            "extra_src": ""
+            "extra_args": ""
         },
         "serials": [
             "1F002A000A50304158373420-if00"
@@ -29,40 +29,38 @@
         "chipset": "stm32g0b1xx",
         "katapult": {
             "installed": true,
-            "extra_src": ""
+            "extra_args": ""
         },
         "klipper": {
-            "extra_src": ""
+            "extra_args": ""
         },
         "serials": [
-            "110032000450505539323520-if00",
-            "290055001850304158373620-if00"
-        ]
-    },
-    "rp2040zero": {
-        "chipset": "rp2040",
-        "katapult": {
-            "installed": true,
-            "extra_src": ""
-        },
-        "klipper": {
-            "extra_src": ""
-        },
-        "serials": [
-            "E6637C05E758A438-if00"
+            "290055001850304158373620-if00",
+            "230048001750304158373620-if00"
         ]
     },
     "flylllplusbuffer": {
         "chipset": "stm32f072xb",
         "katapult": {
             "installed": true,
-            "extra_src": ""
+            "extra_args": ""
         },
         "klipper": {
-            "extra_src": "src-$(CONFIG_MACH_STM32F072) += buffer.c"
+            "makefile_patches": [
+                {
+                    "file": "src/Makefile",
+                    "line": "src-y += buffer.c"
+                }
+            ],
+            "extra_args": ""
         },
         "serials": [
-            "4C0033000957465331323720-if00"
+            "4C0033000957465331323720-if00",
+            "3F0037000957465331323720-if00",
+            "440037000957465331323720-if00",
+            "190031000957465331323720-if00",
+            "400030000957465331323720-if00",
+            "2B0038000957465331323720-if00"
         ]
     }
 }
