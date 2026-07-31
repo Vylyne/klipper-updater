@@ -25,7 +25,7 @@ from ..devices import BusDevice, device_state, scan
 from ..errors import UpdaterError
 from ..paths import FW_TARGETS, Paths
 from ..settings import Settings, load_settings
-from .rpc import ERR_INVALID_PARAMS, MethodNotFound, RpcError
+from .rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, MethodNotFound, RpcError
 
 #: How long a Moonraker query may block before we give up and report unknown.
 #: Small on purpose - these are best-effort enrichments of fw.status, and the
@@ -66,12 +66,16 @@ class Api:
         paths: Paths,
         *,
         call: Optional[Callable[[str, Any, float], Any]] = None,
+        runner: Optional[Any] = None,
         logger: Any = None,
     ) -> None:
         self.paths = paths
         # Injected so this class never touches the transport directly, which is
         # what makes it testable without a Moonraker.
         self._call = call
+        # None in a read-only deployment; the build methods then report that the
+        # capability is absent rather than half-working.
+        self.runner = runner
         self._log = logger
 
     # -- helpers -----------------------------------------------------------
@@ -182,8 +186,8 @@ class Api:
             "version": __version__,
             "dry_run": s.dry_run,
             "enable_flashing": s.enable_flashing,
-            "phase": 1,
-            "capabilities": sorted(self.METHODS),
+            "phase": 2 if self.runner is not None else 1,
+            "capabilities": sorted(self.available_methods()),
             "host": {
                 "nproc": os.cpu_count(),
                 "python": platform.python_version(),
@@ -196,18 +200,19 @@ class Api:
         """One call paints the whole panel."""
         reg = self.registry()
         s = self.settings()
+        current = self.runner.current() if self.runner else None
         return {
             "types": [self.type_status(reg, n) for n in reg.names()],
             "bus": self.bus(reg),
-            # No job runner until the build phase; the panel already tolerates
-            # these being empty, so shipping them now keeps the shape stable.
-            "job": None,
-            "recent": [],
+            "job": current.to_dict() if current else None,
+            "recent": [j.to_dict() for j in self.runner.recent(10)] if self.runner else [],
             "locked_by": self.lock_holder(),
             "klipper_service": self.klipper_service_state(),
             "printing": self.is_printing(),
             "settings": dataclasses.asdict(s),
-            "read_only": True,
+            # True while nothing here can build or flash. The panel uses
+            # `capabilities` from fw.ping for per-control gating.
+            "read_only": self.runner is None,
         }
 
     def lock_holder(self) -> Optional[dict[str, Any]]:
@@ -240,6 +245,118 @@ class Api:
     def settings_get(self, args: dict) -> dict[str, Any]:
         return {"settings": dataclasses.asdict(self.settings())}
 
+    # -- jobs --------------------------------------------------------------
+
+    def _require_runner(self):
+        if self.runner is None:
+            raise RpcError(
+                "this agent is running read-only; no job runner is available",
+                ERR_METHOD_NOT_FOUND,
+            )
+        return self.runner
+
+    def build(self, args: dict) -> dict[str, Any]:
+        """Start a build. Returns a job id immediately - never blocks."""
+        runner = self._require_runner()
+        name = args.get("name")
+        fw = args.get("fw")
+        if not name or fw not in FW_TARGETS:
+            raise RpcError(
+                f"'name' is required and 'fw' must be one of {list(FW_TARGETS)}",
+                ERR_INVALID_PARAMS,
+            )
+        name, fw = str(name), str(fw)
+
+        reg = self.registry()
+        reg.get(name)  # fail fast on an unknown type, before creating a job
+        if not os.path.exists(self.paths.config_file(name, fw)):
+            # menuconfig is ncurses and cannot run here. Say so precisely rather
+            # than starting a job that dies immediately.
+            raise RpcError(
+                f"{name} has no saved {fw} config. Run "
+                f"'updatefw menuconfig -t {name} -f {fw}' over SSH once first.",
+                data={
+                    "code": "no_saved_config",
+                    "message": "menuconfig has never been run for this type",
+                    "data": {"type": name, "fw": fw},
+                },
+            )
+
+        jobs = args.get("jobs")
+        clean = args.get("clean")
+
+        def run(ctx) -> dict[str, Any]:
+            from ..build import build as do_build
+
+            ctx.step(f"Building {fw} for {name}", 0, 1)
+            result = do_build(
+                self.paths,
+                self.registry(),
+                self.settings(),
+                name,
+                fw,
+                reporter=ctx.reporter,
+                cancel=ctx.cancel,
+                jobs=int(jobs) if jobs is not None else None,
+                clean=bool(clean) if clean is not None else None,
+            )
+            ctx.step(f"Built {fw} for {name}", 1, 1)
+            return {
+                "type": name,
+                "fw": fw,
+                "bin_path": result.bin_path,
+                "uf2_path": result.uf2_path,
+                "duration": round(result.duration, 2),
+                "fw_sha": result.fw_sha,
+                "config_rewritten": result.config_rewritten,
+            }
+
+        job = runner.submit("build", {"name": name, "fw": fw}, run)
+        return {"job_id": job.id, "job": job.to_dict()}
+
+    def job_get(self, args: dict) -> dict[str, Any]:
+        """A job plus a slice of its log.
+
+        `log_from` is how the panel recovers from a gap: batched log events carry
+        the sequence of their first line, and any mismatch against what the client
+        expected means it asks for the range it missed.
+        """
+        runner = self._require_runner()
+        job_id = args.get("job_id")
+        job = runner.get(str(job_id)) if job_id else runner.current()
+        if job is None:
+            raise RpcError(
+                f"no such job: {job_id}" if job_id else "no job is running",
+                data={"code": "unknown_job", "message": "job not found", "data": {}},
+            )
+
+        raw_from = args.get("log_from")
+        try:
+            log_from = max(int(raw_from), 0) if raw_from is not None else 0
+        except (TypeError, ValueError):
+            raise RpcError("'log_from' must be an integer", ERR_INVALID_PARAMS) from None
+
+        lines, served_from, log_next = job.log_since(log_from)
+        return {
+            "job": job.to_dict(),
+            "log": [line.to_dict() for line in lines],
+            # May exceed log_from when the ring buffer already evicted the
+            # requested range; the panel shows a "lines omitted" marker.
+            "log_from": served_from,
+            "log_next": log_next,
+            "log_dropped": job.dropped,
+        }
+
+    def job_cancel(self, args: dict) -> dict[str, Any]:
+        runner = self._require_runner()
+        job_id = args.get("job_id")
+        if not job_id:
+            current = runner.current()
+            if current is None:
+                raise RpcError("no job is running", ERR_INVALID_PARAMS)
+            job_id = current.id
+        return runner.cancel(str(job_id))
+
     #: method name -> bound attribute name. Registered with Moonraker verbatim,
     #: and dotted names are fine (Moonraker's own example is
     #: "moontest.hello_world").
@@ -250,12 +367,24 @@ class Api:
         "fw.bus.scan": "bus_scan",
         "fw.artifacts": "artifacts",
         "fw.settings.get": "settings_get",
+        "fw.build": "build",
+        "fw.job.get": "job_get",
+        "fw.job.cancel": "job_cancel",
     }
+
+    #: Registered with Moonraker only when a runner is present, so a read-only
+    #: deployment doesn't advertise controls it cannot honour.
+    JOB_METHODS = ("fw.build", "fw.job.get", "fw.job.cancel")
+
+    def available_methods(self) -> dict[str, str]:
+        if self.runner is not None:
+            return dict(self.METHODS)
+        return {k: v for k, v in self.METHODS.items() if k not in self.JOB_METHODS}
 
     # -- dispatch ----------------------------------------------------------
 
     def dispatch(self, method: str, params: Any = None) -> Any:
-        attr = self.METHODS.get(method)
+        attr = self.available_methods().get(method)
         if attr is None:
             raise MethodNotFound(method)
 

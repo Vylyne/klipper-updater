@@ -43,7 +43,17 @@ def test_ping_reports_the_api_version_the_panel_gates_on(api):
 
 
 def test_ping_advertises_exactly_the_registered_methods(api):
-    assert sorted(api.dispatch("fw.ping")["capabilities"]) == sorted(Api.METHODS)
+    assert sorted(api.dispatch("fw.ping")["capabilities"]) == sorted(api.available_methods())
+
+
+def test_a_runnerless_agent_does_not_advertise_job_methods(api):
+    """The panel gates controls on `capabilities`, so a read-only deployment must
+    not claim it can build."""
+    caps = api.dispatch("fw.ping")["capabilities"]
+    for method in Api.JOB_METHODS:
+        assert method not in caps
+    assert api.dispatch("fw.ping")["phase"] == 1
+    assert api.dispatch("fw.status")["read_only"] is True
 
 
 def test_flashing_is_off_by_default(api):

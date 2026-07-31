@@ -55,6 +55,97 @@ class EventEmitter:
             return False
 
 
+class LogBatcher:
+    """Coalesces job log lines into periodic `log` events.
+
+    A Klipper build emits 400-800 lines in a few seconds. One event per line means
+    that many broadcast websocket frames to *every* connected client - the Mainsail
+    tab, a phone, KlipperScreen - which is enough to make the UI stutter on a Pi.
+    Batching caps it at roughly four frames a second.
+
+    Flushes on whichever comes first: 250 ms elapsed, 40 lines, or 32 KiB. The byte
+    trigger keeps a payload bounded even if the compiler emits a wall of errors.
+    """
+
+    FLUSH_INTERVAL = 0.25
+    MAX_LINES = 40
+    MAX_BYTES = 32 * 1024
+    #: One pathological line shouldn't consume the whole payload budget.
+    MAX_LINE_BYTES = 8 * 1024
+
+    def __init__(self, emitter: EventEmitter, logger: Any = None) -> None:
+        self.emitter = emitter
+        self._log = logger
+        self._lock = threading.Lock()
+        self._job_id: Optional[str] = None
+        self._pending: list[dict] = []
+        self._first_seq: Optional[int] = None
+        self._bytes = 0
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._tick, name="log-batcher", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=2.0)
+        self.flush()
+
+    def add(self, job: Any, line: Any) -> None:
+        """Queue one line. Called from the job worker thread."""
+        text = line.text
+        if len(text) > self.MAX_LINE_BYTES:
+            text = text[: self.MAX_LINE_BYTES] + " ...[truncated]"
+
+        with self._lock:
+            if self._job_id is not None and self._job_id != job.id:
+                # Lines from two different jobs must never share a batch.
+                self._flush_locked()
+            self._job_id = job.id
+            if self._first_seq is None:
+                self._first_seq = line.seq
+            self._pending.append({"i": line.seq, "s": line.stream, "t": text})
+            self._bytes += len(text) + 24  # rough per-line envelope overhead
+            if len(self._pending) >= self.MAX_LINES or self._bytes >= self.MAX_BYTES:
+                self._flush_locked()
+
+    def flush(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        if not self._pending or self._job_id is None:
+            return
+        payload = {
+            "job_id": self._job_id,
+            # Sequence of the FIRST line in this batch. The client's next expected
+            # index is seq + len(lines); anything else is a gap, and it resyncs
+            # via fw.job.get. Without this a streaming log silently lies after a
+            # dropped frame or a page reload.
+            "seq": self._first_seq,
+            "lines": self._pending,
+        }
+        self._pending = []
+        self._first_seq = None
+        self._bytes = 0
+        self.emitter.emit("log", payload)
+
+    def _tick(self) -> None:
+        while not self._stop.wait(self.FLUSH_INTERVAL):
+            try:
+                self.flush()
+            except Exception as exc:  # noqa: BLE001 - a flusher must not die
+                if self._log is not None:
+                    self._log.debug(f"log flush failed: {exc}")
+
+
 def _fingerprint(devices: list[BusDevice]) -> tuple:
     """A comparable snapshot, so we only emit when the bus actually changes."""
     return tuple(sorted((d.fw.lower(), d.chipset, d.serial) for d in devices))

@@ -6,7 +6,12 @@ truth** — and `tests/test_agent_methods.py` is what stops them drifting.
 
 - Agent name: `klipper_updater`
 - `api_version`: **1**
-- Phase: **1** (read-only; nothing here builds, flashes, or mutates anything)
+- Phase: **2** (can build; still cannot flash or mutate the registry)
+
+**Gate controls on `capabilities` from `fw.ping`, not on `phase`.** An agent
+without a job runner does not register or advertise the job methods at all, so a
+newer panel talking to an older agent must hide its build buttons rather than
+offer something that returns `-32601`.
 
 ## Transport
 
@@ -78,6 +83,9 @@ application error (see `data.code`), `-32603` internal.
 | `fw.bus.scan` | `only_untracked?`, `chipset?` | `{devices: [BusDevice]}` |
 | `fw.artifacts` | `name` (required) | `{klipper: Artifact, katapult: Artifact}` |
 | `fw.settings.get` | — | `{settings: Settings}` |
+| `fw.build` | `name`, `fw`, `jobs?`, `clean?` | `{job_id, job}` — returns immediately |
+| `fw.job.get` | `job_id?`, `log_from?` | `{job, log, log_from, log_next, log_dropped}` |
+| `fw.job.cancel` | `job_id?` | `{cancelling, immediate}` |
 
 ### `fw.ping`
 
@@ -167,6 +175,83 @@ Worth surfacing; users otherwise get "why did my CAN setting move?".
 `tracked_by` is `null` for a device on the bus that no MCU type claims — that's
 the "new board, want to track it?" case.
 
+## Jobs
+
+Builds and flashes are long, so they never block an RPC call. `fw.build` returns
+a `job_id` immediately and progress arrives as events.
+
+**One job at a time, and it is not a queue.** Submitting while something runs
+fails with `busy`, carrying the incumbent in `error.data.current`. A queue would
+be worse than a refusal: the user asks for one thing, walks away, and returns to
+find a second operation they'd forgotten about had started itself.
+
+The same exclusive file lock guards the CLI, and it is taken *before* the job is
+created — so if someone is mid-`updatefw build` over SSH, `fw.build` fails
+immediately with `busy` and names them, rather than producing a job that dies a
+moment later.
+
+```jsonc
+// Job (never includes the log - that travels separately and is large)
+{
+  "id": "job-7",
+  "kind": "build",
+  "params": {"name": "bttebb36", "fw": "klipper"},
+  "state": "running",          // queued|running|succeeded|failed|cancelled
+  "created": 1785412000.0, "started": 1785412000.1, "finished": null,
+  "duration": 12.4,            // live while running
+  "progress": {"step": "Building klipper for bttebb36", "index": 0, "total": 1},
+  "result": null,              // set on success
+  "error": null,               // {code, message, data} on failure
+  "cancel_requested": false,
+  "log_next": 431,             // next sequence number that will be assigned
+  "log_dropped": 0             // lines evicted by the ring buffer
+}
+```
+
+### Cancellation is not uniform
+
+`fw.job.cancel` returns `immediate`, and the panel must say which it got:
+
+| kind | behaviour |
+| --- | --- |
+| `build` | **Immediate.** The whole `make` process group is killed. Always safe. |
+| `flash`, `flash_type` | **Deferred** — honoured only *between* devices. Interrupting a `flashtool -f` write leaves a board with half an image. Show "cancelling after the current board finishes…". |
+| `update_all` | Deferred between types and devices; the in-flight build is cancellable. |
+
+### The log, and its sequence numbers
+
+Every log line gets a monotonic index, starting at 0. A `log` event carries the
+index of its **first** line:
+
+```json
+{"job_id": "job-7", "seq": 120,
+ "lines": [{"i": 120, "s": "stdout", "t": "  Compiling out/src/stepper.o"},
+           {"i": 121, "s": "stdout", "t": "  Compiling out/src/buffer.o"}]}
+```
+
+Keys are short (`i`/`s`/`t`) because a build emits hundreds of these to every
+connected client. `s` is one of `stdout`, `info`, `warn`, `error`, `cmd`.
+
+**Client contract.** Track the next index you expect, starting at 0. On a `log`
+event:
+
+- `seq == expected` → append, and set `expected = seq + lines.length`.
+- anything else → **a gap.** Call `fw.job.get {job_id, log_from: expected}` and
+  replace from there.
+
+Without this a streaming log silently lies after a dropped frame, a page reload,
+or a Moonraker restart mid-build.
+
+`fw.job.get` returns `log_from` — the first index it could *actually* serve. That
+may be higher than you asked for, because the log is a ring buffer (default 2000
+lines, `log_ring_size`) and a very long build evicts its own beginning. When
+`log_from > log_from_you_requested`, or `log_dropped > 0`, tell the user lines
+were omitted rather than renumbering silently.
+
+Batching is not optional: flushes happen at 250 ms, 40 lines, or 32 KiB,
+whichever comes first. One event per line would be 400–800 broadcast frames per
+build to every connected client.
+
 ## Events
 
 The agent pushes with `connection.send_event`; clients receive
@@ -179,11 +264,21 @@ The agent pushes with `connection.send_event`; clients receive
 
 | Event | `data` | When |
 | --- | --- | --- |
-| `state` | the full `fw.status` payload | on connect, and when Klipper's service state changes |
+| `state` | the full `fw.status` payload | on connect, when Klipper's service state changes, and after any job finishes |
 | `bus` | `{devices: [BusDevice]}` | when the set of attached devices changes |
+| `job` | `{job: Job}` | on every state transition and progress step |
+| `log` | `{job_id, seq, lines}` | batched: 250 ms / 40 lines / 32 KiB |
 
-Poll interval for `bus` is 15s idle, dropping to 2s while an operation runs (a
-board disappears and reappears within seconds during a flash).
+Poll interval for `bus` is 15s idle, dropping to 2s while a job runs (a board
+disappears and reappears within seconds during a flash).
+
+Pending log lines are always flushed *before* the `job` event that follows them,
+so the UI never shows "finished" above the final few lines of output.
+
+A job outlives the connection deliberately. If Moonraker restarts mid-build the
+build keeps going, and on reconnect the agent re-emits `state` plus a `job` event
+for anything still running — so a client that joined late isn't left thinking the
+printer is idle.
 
 `connected` and `disconnected` are **reserved** — Moonraker emits those itself,
 carrying the agent's identify payload, and rejects any attempt by an agent to
@@ -200,10 +295,14 @@ No polling needed:
 
 ## Later phases
 
-Reserved names, not yet implemented — a Phase-1 agent returns `-32601` for these,
-which is why the panel gates on `capabilities`:
+Reserved names, not yet implemented — the agent returns `-32601` for these and
+does not advertise them, which is why the panel gates on `capabilities`:
 
-`fw.build`, `fw.flash`, `fw.flash_type`, `fw.update_all`, `fw.job.get`,
-`fw.job.cancel`, `fw.type.add`, `fw.type.update`, `fw.type.remove`,
-`fw.serial.add`, `fw.serial.remove`, `fw.settings.set`, `fw.kconfig.*`,
-`fw.add_mcu.start`, `fw.add_mcu.confirm`.
+`fw.flash`, `fw.flash_type`, `fw.update_all`, `fw.type.add`, `fw.type.update`,
+`fw.type.remove`, `fw.serial.add`, `fw.serial.remove`, `fw.settings.set`,
+`fw.kconfig.*`, `fw.add_mcu.start`, `fw.add_mcu.confirm`.
+
+`fw.build` deliberately refuses a type with no saved `.config`, returning
+`no_saved_config` with the exact CLI command to run. `menuconfig` is an ncurses
+UI and cannot run inside the agent — that stays an SSH operation until the
+Kconfig web UI lands.

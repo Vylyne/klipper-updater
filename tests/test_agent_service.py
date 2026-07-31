@@ -340,6 +340,110 @@ def test_registration_repeats_on_every_reconnect(paths, live_registry_text):
 
 
 # --------------------------------------------------------------------------
+# a build, end to end over the socket
+# --------------------------------------------------------------------------
+
+
+def test_a_build_driven_over_the_wire_streams_job_and_log_events(wired, paths):
+    """The whole Phase 2 path: Moonraker relays fw.build, the agent runs it, and
+    job + batched log events come back on the same socket."""
+    import os
+
+    agent, server = wired
+    agent.batcher.FLUSH_INTERVAL = 0.05
+
+    # dry_run so no toolchain is needed; the fake build log is still real output
+    # through the real reporter, batcher and emitter.
+    with open(paths.settings_file, "w", encoding="utf-8") as fh:
+        fh.write("[updater]\ndry_run = true\nservice_backend = null\nclean_before_build = false\n")
+    os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)
+    with open(paths.config_file("bttebb36", "klipper"), "w", encoding="utf-8") as fh:
+        fh.write("CONFIG_MACH_STM32=y\n")
+
+    _run(agent)
+    assert server.wait_for(lambda: server.methods_called("server.connection.identify"))
+
+    server.send(
+        {
+            "jsonrpc": "2.0",
+            "id": 500,
+            "method": "fw.build",
+            "params": {"name": "bttebb36", "fw": "klipper"},
+        }
+    )
+    assert server.wait_for(lambda: any(r["id"] == 500 for r in server.responses))
+    reply = next(r for r in server.responses if r["id"] == 500)
+    assert "error" not in reply, reply
+    job_id = reply["result"]["job_id"]
+
+    # The job finishes, and we saw it both start and end.
+    assert agent.runner.wait(timeout=60)
+    agent.batcher.flush()
+    assert server.wait_for(
+        lambda: any(
+            e["data"]["job"]["state"] in ("succeeded", "failed", "cancelled")
+            for e in _events(server, "job")
+        ),
+        timeout=15,
+    )
+
+    jobs = [e["data"]["job"] for e in _events(server, "job")]
+    assert jobs[0]["id"] == job_id
+    assert jobs[-1]["state"] == "succeeded", jobs[-1].get("error")
+
+    # Log arrived batched, not one frame per line.
+    logs = _events(server, "log")
+    assert logs, "no log events were emitted"
+    total_lines = sum(len(e["data"]["lines"]) for e in logs)
+    assert total_lines > 50, f"only {total_lines} lines streamed"
+    assert len(logs) < total_lines, "batching should mean fewer frames than lines"
+
+    # Sequence numbers are contiguous across batches - this is what lets the
+    # panel distinguish an in-order append from a gap.
+    seqs = [line["i"] for e in logs for line in e["data"]["lines"]]
+    assert seqs == list(range(len(seqs))), "log sequence must be gapless and ordered"
+    for event in logs:
+        assert event["data"]["seq"] == event["data"]["lines"][0]["i"]
+
+
+def test_a_build_can_be_cancelled_over_the_wire(wired, paths):
+    import os
+
+    agent, server = wired
+    with open(paths.settings_file, "w", encoding="utf-8") as fh:
+        fh.write("[updater]\ndry_run = true\nservice_backend = null\n")
+    os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)
+    with open(paths.config_file("bttebb36", "klipper"), "w", encoding="utf-8") as fh:
+        fh.write("CONFIG_MACH_STM32=y\n")
+
+    _run(agent)
+    assert server.wait_for(lambda: server.methods_called("server.connection.identify"))
+
+    server.send(
+        {
+            "jsonrpc": "2.0",
+            "id": 600,
+            "method": "fw.build",
+            "params": {"name": "bttebb36", "fw": "klipper"},
+        }
+    )
+    assert server.wait_for(lambda: any(r["id"] == 600 for r in server.responses))
+
+    server.send({"jsonrpc": "2.0", "id": 601, "method": "fw.job.cancel", "params": {}})
+    assert server.wait_for(lambda: any(r["id"] == 601 for r in server.responses))
+    cancel_reply = next(r for r in server.responses if r["id"] == 601)
+    assert cancel_reply["result"]["cancelling"] is True
+    assert cancel_reply["result"]["immediate"] is True, "a build stops straight away"
+
+    assert agent.runner.wait(timeout=60)
+    assert agent.runner.get(reply_job_id(server, 600)).state in ("cancelled", "succeeded")
+
+
+def reply_job_id(server: FakeMoonraker, request_id: int) -> str:
+    return next(r for r in server.responses if r["id"] == request_id)["result"]["job_id"]
+
+
+# --------------------------------------------------------------------------
 # events
 # --------------------------------------------------------------------------
 

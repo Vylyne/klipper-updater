@@ -21,8 +21,10 @@ import time
 from typing import Any, Optional
 
 from .. import AGENT_NAME, __version__
+from ..jobs import Job, JobRunner
 from ..paths import Paths
-from .events import BusWatcher, EventEmitter
+from ..settings import Settings, load_settings
+from .events import BusWatcher, EventEmitter, LogBatcher
 from .methods import Api
 from .rpc import MoonrakerPeer, RpcError
 
@@ -57,7 +59,15 @@ class Agent:
         self._stop = threading.Event()
 
         self.emitter = EventEmitter(lambda: self._peer, logger=self.log)
-        self.api = Api(paths, call=self._call, logger=self.log)
+        self.batcher = LogBatcher(self.emitter, logger=self.log)
+        self.runner = JobRunner(
+            paths,
+            self._settings,
+            on_job_change=self._on_job_change,
+            on_log_line=self.batcher.add,
+            logger=self.log,
+        )
+        self.api = Api(paths, call=self._call, runner=self.runner, logger=self.log)
         self.watcher = BusWatcher(
             paths,
             self.emitter,
@@ -79,6 +89,28 @@ class Agent:
         self.log.debug(f"-> {method} {params!r}")
         return self.api.dispatch(method, params)
 
+    def _settings(self) -> Settings:
+        try:
+            return load_settings(self.paths.settings_file)
+        except Exception:  # noqa: BLE001 - a bad conf must not block a build
+            return Settings()
+
+    def _on_job_change(self, job: Job) -> None:
+        """A job started, progressed, or finished."""
+        # Any pending log lines belong before the state change that follows them,
+        # or the UI shows "finished" above the last few output lines.
+        self.batcher.flush()
+        self.emitter.emit("job", {"job": job.to_dict()})
+
+        # Poll the bus faster while work is happening: during a flash a board
+        # disappears and comes back within seconds.
+        self.watcher.set_busy(not job.is_terminal)
+
+        if job.is_terminal:
+            # Artifacts and staleness changed, so refresh the whole picture.
+            self.watcher.poke()
+            self.emit_state()
+
     def _on_notify(self, method: str, params: Any) -> None:
         # Moonraker broadcasts a lot; we only care about klipper's service state
         # changing, which is worth reflecting straight away rather than waiting
@@ -91,6 +123,7 @@ class Agent:
     def stop(self) -> None:
         self._stop.set()
         self.watcher.stop()
+        self.batcher.stop()
         peer = self._peer
         if peer is not None:
             peer.close()
@@ -116,9 +149,10 @@ class Agent:
 
         # Registrations are per-connection and vanish on disconnect, so this runs
         # on every reconnect, not just at startup.
-        for name in sorted(self.api.METHODS):
+        methods = self.api.available_methods()
+        for name in sorted(methods):
             peer.call("connection.register_remote_method", {"method_name": name})
-        self.log.info(f"registered {len(self.api.METHODS)} methods")
+        self.log.info(f"registered {len(methods)} methods")
 
     def run_once(self) -> None:
         """One connection lifetime: connect, serve, return when it drops."""
@@ -144,7 +178,14 @@ class Agent:
         # rather than letting the watcher suppress it as "unchanged".
         self.watcher.reset()
         self.watcher.start()
+        self.batcher.start()
         self.emit_state()
+
+        # A job started before the socket dropped keeps running - it outlives the
+        # connection deliberately - so tell the new clients about it.
+        current = self.runner.current()
+        if current is not None:
+            self.emitter.emit("job", {"job": current.to_dict()})
 
         peer.wait_closed()
         self.log.info("moonraker connection closed")
