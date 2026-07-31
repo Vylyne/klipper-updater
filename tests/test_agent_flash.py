@@ -38,6 +38,28 @@ def _stage_artifact(paths, mcu_type=TRACKED_TYPE) -> str:
     return path
 
 
+def _moonraker(print_state="standby", idle_state="Ready", klippy="ready"):
+    """A stand-in for the Moonraker call channel used by the flash path."""
+
+    def call(method, params, timeout):
+        if method == "printer.objects.query":
+            return {
+                "status": {
+                    "print_stats": {"state": print_state},
+                    "idle_timeout": {"state": idle_state},
+                }
+            }
+        if method == "printer.info":
+            return {"state": klippy, "state_message": f"klippy is {klippy}"}
+        if method == "printer.firmware_restart":
+            return "ok"
+        if method == "machine.system_info":
+            return {"system_info": {"service_state": {"klipper": {"active_state": "active"}}}}
+        return {}
+
+    return call
+
+
 @pytest.fixture
 def flashable(paths, live_registry_text, fake_root):
     """Everything in place for a successful flash, with flashing enabled."""
@@ -52,7 +74,11 @@ def flashable(paths, live_registry_text, fake_root):
     runner = JobRunner(paths, lambda: __import__(
         "klipper_updater.settings", fromlist=["load_settings"]
     ).load_settings(paths.settings_file))
-    api = Api(paths, runner=runner)
+    api = Api(paths, runner=runner, call=_moonraker())
+    # Keep the readiness poll from dominating the test run.
+    api.KLIPPY_READY_TIMEOUT = 2.0
+    api.KLIPPY_RESTART_TIMEOUT = 2.0
+    api.KLIPPY_POLL_INTERVAL = 0.05
     yield api
     runner._cancel.set()
     runner.wait(timeout=20)
@@ -150,9 +176,7 @@ def test_flashing_a_detached_board_is_refused_before_klipper_is_stopped(flashabl
 @pytest.mark.parametrize("state", ["printing", "paused"])
 def test_flashing_during_a_print_is_refused(flashable, state):
     """Nothing prevented this before; a cron'd update would destroy a print."""
-    flashable._call = lambda method, params, timeout: {
-        "status": {"print_stats": {"state": state}}
-    }
+    flashable._call = _moonraker(print_state=state)
     with pytest.raises(RpcError) as exc:
         flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL})
     assert exc.value.data["code"] == "print_in_progress"
@@ -160,9 +184,7 @@ def test_flashing_during_a_print_is_refused(flashable, state):
 
 
 def test_force_overrides_the_print_gate(flashable):
-    flashable._call = lambda method, params, timeout: {
-        "status": {"print_stats": {"state": "printing"}}
-    }
+    flashable._call = _moonraker(print_state="printing")
     res = flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL, "force": True})
     assert res["job_id"]
     assert flashable.runner.wait(timeout=30)
@@ -170,9 +192,7 @@ def test_force_overrides_the_print_gate(flashable):
 
 @pytest.mark.parametrize("state", ["standby", "complete", "cancelled"])
 def test_flashing_while_idle_is_allowed(flashable, state):
-    flashable._call = lambda method, params, timeout: {
-        "status": {"print_stats": {"state": state}}
-    }
+    flashable._call = _moonraker(print_state=state)
     assert flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL})["job_id"]
     assert flashable.runner.wait(timeout=30)
 
@@ -346,3 +366,116 @@ def test_shutdown_does_not_defer_for_a_build(paths, live_registry_text):
     finally:
         release.set()
         agent.runner.wait(timeout=15)
+
+
+# --------------------------------------------------------------------------
+# regressions found on real hardware
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("idle_state", ["Printing"])
+def test_flashing_during_homing_or_qgl_is_refused(flashable, idle_state):
+    """Found on the printer: a flash went ahead during a QGL.
+
+    print_stats.state only tracks a virtual_sdcard print job, so it reads
+    "standby" throughout a manual home or quad-gantry-level. idle_timeout.state is
+    the field that means "klipper is executing commands", and stopping klipper
+    mid-motion is just as destructive as interrupting a print - it leaves the MCU
+    shut down.
+    """
+    flashable._call = _moonraker(print_state="standby", idle_state=idle_state)
+    with pytest.raises(RpcError) as exc:
+        flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL})
+    assert exc.value.data["code"] == "print_in_progress"
+    assert exc.value.data["data"]["reason"] == "busy"
+    assert "homing" in str(exc.value).lower()
+    assert flashable.runner.current() is None
+
+
+@pytest.mark.parametrize("idle_state", ["Idle", "Ready"])
+def test_an_idle_printer_is_still_flashable(flashable, idle_state):
+    flashable._call = _moonraker(idle_state=idle_state)
+    assert flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL})["job_id"]
+    assert flashable.runner.wait(timeout=30)
+
+
+def test_force_also_overrides_the_busy_gate(flashable):
+    flashable._call = _moonraker(idle_state="Printing")
+    assert flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL, "force": True})["job_id"]
+    assert flashable.runner.wait(timeout=30)
+
+
+def test_a_shut_down_klippy_triggers_a_firmware_restart(flashable):
+    """The second half of the same incident: klipper's service came up but klippy
+    was in shutdown because the reflashed MCU had reset, and it needed a manual
+    FIRMWARE_RESTART. Do it automatically."""
+    calls: list[str] = []
+    ready_after_restart = {"done": False}
+
+    def call(method, params, timeout):
+        calls.append(method)
+        if method == "printer.objects.query":
+            return {
+                "status": {
+                    "print_stats": {"state": "standby"},
+                    "idle_timeout": {"state": "Ready"},
+                }
+            }
+        if method == "printer.info":
+            state = "ready" if ready_after_restart["done"] else "shutdown"
+            return {"state": state, "state_message": "MCU 'mcu' shutdown"}
+        if method == "printer.firmware_restart":
+            ready_after_restart["done"] = True
+            return "ok"
+        return {}
+
+    flashable._call = call
+    res = flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL})
+    assert flashable.runner.wait(timeout=30)
+
+    job = flashable.runner.get(res["job_id"])
+    assert job.state == "succeeded", job.error
+    assert "printer.firmware_restart" in calls, "should have recovered by itself"
+    assert job.result["klippy_state"] == "ready"
+
+    log = "\n".join(line.text for line in job.log_since(0)[0])
+    assert "firmware restart" in log.lower()
+
+
+def test_a_klippy_that_stays_broken_is_reported_loudly(flashable):
+    """If a firmware restart doesn't fix it, say exactly what to do next rather
+    than reporting a clean success."""
+    def call(method, params, timeout):
+        if method == "printer.objects.query":
+            return {
+                "status": {
+                    "print_stats": {"state": "standby"},
+                    "idle_timeout": {"state": "Ready"},
+                }
+            }
+        if method == "printer.info":
+            return {"state": "error", "state_message": "Unable to connect"}
+        return "ok"
+
+    flashable._call = call
+    res = flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL})
+    assert flashable.runner.wait(timeout=30)
+
+    job = flashable.runner.get(res["job_id"])
+    assert job.result["klippy_state"] == "error"
+    log = "\n".join(line.text for line in job.log_since(0)[0])
+    assert "FIRMWARE_RESTART" in log
+
+
+def test_a_ready_klippy_needs_no_restart(flashable):
+    calls: list[str] = []
+    base = _moonraker()
+
+    def call(method, params, timeout):
+        calls.append(method)
+        return base(method, params, timeout)
+
+    flashable._call = call
+    flashable.dispatch("fw.flash", {"serial": TRACKED_SERIAL})
+    assert flashable.runner.wait(timeout=30)
+    assert "printer.firmware_restart" not in calls

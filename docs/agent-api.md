@@ -247,16 +247,46 @@ real explanation instead of a job that dies a second later. In order:
 | serial resolves to a type | `unknown_serial` / `ambiguous_serial` / `serial_tracked_elsewhere` |
 | firmware has been built | `no_artifact` |
 | board is on the bus | `device_not_found` |
-| no print running | `print_in_progress` (bypass with `force: true`) |
+| printer idle | `print_in_progress` (bypass with `force: true`) |
+
+The idle check looks at **two** fields, and needs both:
+
+- `print_stats.state` — refuses `printing` / `paused`. Only knows about
+  virtual_sdcard print jobs.
+- `idle_timeout.state` — refuses `"Printing"`. This is the one that means
+  "Klipper is executing commands", and it is the only one that catches a manual
+  home, a quad-gantry-level, a bed mesh, or a macro run from the console.
+
+`print_stats` alone is not enough, and that gap was found on real hardware: a
+flash went ahead during a QGL, Klipper was stopped mid-motion, and the MCU came
+back shut down. `error.data.reason` is `"print"` or `"busy"` so a client can word
+its message correctly.
 
 The board check is up front on purpose: discovering a detached board *after*
 stopping Klipper would mean an outage for nothing.
 
-Once running, the job stops Klipper, writes, and restarts it — Klipper is down
-only for the write itself. **The stop is verified.** If Klipper is still running
-after the stop request (no passwordless sudo, Moonraker unreachable, a wedged
-unit) the job aborts with `service_control` rather than flashing anyway, because
-Klipper holds the serial port and writing into that contention is unsafe.
+Once running, the job stops Klipper, writes, waits for the board to come back,
+restarts Klipper, and then confirms Klipper is actually usable. Klipper is down
+only for the write itself.
+
+**The stop is verified.** If Klipper is still running after the stop request (no
+passwordless sudo, Moonraker unreachable, a wedged unit) the job aborts with
+`service_control` rather than flashing anyway, because Klipper holds the serial
+port and writing into that contention is unsafe.
+
+**The board is waited for.** After the write it reboots into the new firmware and
+re-enumerates over USB, which takes a couple of seconds. Starting Klipper before
+the device node exists means Klipper cannot find its MCU and comes up in an error
+state.
+
+**`systemctl is-active klipper` is not the same as Klipper being ready.** A board
+that was mid-motion when the service stopped comes back with its MCU shut down, so
+Klippy reaches `error` or `shutdown` and the printer will not move until a
+`FIRMWARE_RESTART`. The job polls `printer.info`, and if Klippy is not `ready` it
+issues `printer.firmware_restart` once and polls again — the same thing a human
+does by hand. The final state is reported as `result.klippy_state`, and if it is
+still broken the job log says exactly what to run. The flash itself is not marked
+failed, because the write did succeed.
 
 Cancellation is **deferred** for a flash (`immediate: false`) — see the table
 above. Show "cancelling after the current board finishes…", not a spinner.

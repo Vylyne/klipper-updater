@@ -312,30 +312,51 @@ def klipper_stopped(
             journal.clear()
 
 
-def assert_not_printing(
+def assert_printer_idle(
     settings: Settings,
     *,
-    print_state: Optional[Callable[[], Optional[str]]] = None,
+    activity: Optional[Callable[[], dict]] = None,
     force: bool = False,
     reporter: Reporter = null_reporter,
 ) -> None:
-    """Refuse to flash during a print.
+    """Refuse to flash while the printer is doing anything.
 
-    Nothing prevented this before, so a cron'd `update-all -y` could destroy a
-    running print. `print_state` returns klipper's print_stats.state; it is only
-    available where there's a Moonraker connection, so the CLI passes None and
-    this becomes a no-op there.
+    **`print_stats.state` is not enough.** It only tracks a virtual_sdcard print
+    job, so it reads "standby" throughout a manual home, a quad-gantry-level, or
+    any macro run from the console - and stopping klipper mid-motion there is just
+    as destructive as interrupting a print. `idle_timeout.state` is the field that
+    means "klipper is executing commands", and it goes to "Printing" for all of
+    those.
+
+    `activity` returns {"print_state": ..., "idle_state": ...}, either value
+    possibly None. It is only available where there's a Moonraker connection, so
+    the CLI passes None and this becomes a no-op there.
     """
-    if force or settings.allow_flash_while_printing or print_state is None:
+    if force or settings.allow_flash_while_printing or activity is None:
         return
     try:
-        state = print_state()
+        state = activity() or {}
     except Exception as exc:  # noqa: BLE001 - never let the check itself break a flash
-        reporter("warn", f"could not determine print state ({exc}); continuing")
+        reporter("warn", f"could not determine printer state ({exc}); continuing")
         return
-    if state in ("printing", "paused"):
+
+    print_state = state.get("print_state")
+    if print_state in ("printing", "paused"):
         raise PrintInProgressError(
-            f"a print is currently {state} - refusing to flash. Cancel the print "
-            f"first, or pass --force if you are certain.",
-            state=state,
+            f"a print is currently {print_state} - refusing to flash. Cancel the print "
+            f"first, or pass force if you are certain.",
+            state=print_state,
+            reason="print",
+        )
+
+    # Catches homing, QGL, bed mesh, a macro, a manual move - anything where
+    # klipper is mid-command and yanking the MCU out would leave it shut down.
+    if state.get("idle_state") == "Printing":
+        raise PrintInProgressError(
+            "the printer is busy executing commands (homing, QGL, a macro, or a "
+            "move) - refusing to flash. Wait for it to finish, or pass force if you "
+            "are certain.",
+            state=print_state,
+            idle_state="Printing",
+            reason="busy",
         )

@@ -23,7 +23,7 @@ from ..build import read_sidecar, staleness
 from ..config import Registry
 from ..devices import BusDevice, device_state, scan
 from ..errors import UpdaterError
-from ..paths import FW_TARGETS, Paths
+from ..paths import FW_TARGETS, REENUMERATE_TIMEOUT, Paths
 from ..settings import Settings, load_settings
 from .rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, MethodNotFound, RpcError
 
@@ -108,11 +108,9 @@ class Api:
         except (TypeError, KeyError):
             return None
 
-    def is_printing(self) -> Optional[bool]:
-        res = self._probe("printer.objects.query", {"objects": {"print_stats": ["state"]}})
-        try:
-            state = res["status"]["print_stats"]["state"]
-        except (TypeError, KeyError):
+    def is_printing(self, activity: Optional[dict] = None) -> Optional[bool]:
+        state = (activity or self._printer_activity()).get("print_state")
+        if state is None:
             return None
         return state in ("printing", "paused")
 
@@ -201,6 +199,7 @@ class Api:
         reg = self.registry()
         s = self.settings()
         current = self.runner.current() if self.runner else None
+        activity = self._printer_activity()
         return {
             "types": [self.type_status(reg, n) for n in reg.names()],
             "bus": self.bus(reg),
@@ -208,7 +207,11 @@ class Api:
             "recent": [j.to_dict() for j in self.runner.recent(10)] if self.runner else [],
             "locked_by": self.lock_holder(),
             "klipper_service": self.klipper_service_state(),
-            "printing": self.is_printing(),
+            "printing": self.is_printing(activity),
+            # idle_timeout.state. The panel needs this as well as `printing`:
+            # print_stats stays "standby" through a manual home or QGL, and
+            # stopping klipper mid-motion is just as destructive.
+            "idle_state": activity.get("idle_state"),
             "settings": dataclasses.asdict(s),
             # True while nothing here can build or flash. The panel uses
             # `capabilities` from fw.ping for per-control gating.
@@ -377,37 +380,73 @@ class Api:
                 },
             )
 
-        # Last gate, and the one that protects a print in progress.
-        from ..service import assert_not_printing
+        # Last gate. Covers a running print *and* any other klipper activity -
+        # homing, QGL, a macro - because stopping klipper mid-motion is just as
+        # destructive as interrupting a print, and print_stats alone misses it.
+        from ..service import assert_printer_idle
 
-        assert_not_printing(
-            settings, print_state=self._print_state, force=force, reporter=self._log_reporter
+        assert_printer_idle(
+            settings, activity=self._printer_activity, force=force, reporter=self._log_reporter
         )
 
         def run(ctx) -> dict[str, Any]:
+            from ..devices import KLIPPER_FW_NAME, wait_for_device
+            from ..errors import BootloaderTimeoutError
             from ..flash import flash_katapult
             from ..service import klipper_stopped, make_controller
 
-            svc = make_controller(self.settings(), call=self._call_for_service)
-            ctx.step(f"Stopping {svc.name}", 0, 3)
-            with klipper_stopped(
-                self.paths, svc, f"flash {serial}", reporter=ctx.reporter
-            ):
-                ctx.step(f"Flashing {serial}", 1, 3)
+            settings_now = self.settings()
+            svc = make_controller(settings_now, call=self._call_for_service)
+            ctx.step(f"Stopping {svc.name}", 0, 4)
+            with klipper_stopped(self.paths, svc, f"flash {serial}", reporter=ctx.reporter):
+                ctx.step(f"Flashing {serial}", 1, 4)
                 # No cancel is threaded into the write on purpose - interrupting
                 # flashtool leaves half an image on the board.
                 flash_katapult(
                     self.paths,
-                    self.settings(),
+                    settings_now,
                     mcu_type,
                     mcu.chipset,
                     serial,
                     fw_bin=fw_bin,
                     reporter=ctx.reporter,
                 )
-                ctx.step(f"Restarting {svc.name}", 2, 3)
-            ctx.step("Done", 3, 3)
-            return {"type": mcu_type, "serial": serial, "fw_bin": fw_bin}
+
+                # The board reboots into the new firmware and re-enumerates over
+                # USB, which takes a couple of seconds. Starting klipper before
+                # the device node exists means klipper cannot find its MCU and
+                # comes up in an error state.
+                ctx.step(f"Waiting for {serial} to come back", 2, 4)
+                if not settings_now.dry_run:
+                    try:
+                        wait_for_device(
+                            self.paths,
+                            mcu.chipset,
+                            serial,
+                            KLIPPER_FW_NAME,
+                            timeout=REENUMERATE_TIMEOUT,
+                            settle=1.0,
+                        )
+                        ctx.reporter("info", f"{serial} is back as a Klipper device.")
+                    except BootloaderTimeoutError as exc:
+                        # Not fatal here: klipper still has to be started, and it
+                        # may yet find the board. The readiness check below is the
+                        # real verdict.
+                        ctx.reporter("warn", str(exc))
+
+                ctx.step(f"Restarting {svc.name}", 3, 4)
+
+            # klipper_stopped has started the service by now. Being *active* is
+            # not the same as being ready, so confirm - and firmware-restart if
+            # the MCU came back shut down.
+            klippy_state = self._await_klippy_ready(ctx.reporter)
+            ctx.step("Done", 4, 4)
+            return {
+                "type": mcu_type,
+                "serial": serial,
+                "fw_bin": fw_bin,
+                "klippy_state": klippy_state,
+            }
 
         job = runner.submit("flash", {"name": mcu_type, "serial": serial}, run)
         return {"job_id": job.id, "job": job.to_dict()}
@@ -426,12 +465,103 @@ class Api:
         else:
             self._log.debug(line)
 
+    def _printer_activity(self) -> dict[str, Optional[str]]:
+        """Both states that mean "don't touch the printer right now".
+
+        print_stats.state only knows about virtual_sdcard print jobs, so it stays
+        "standby" during a manual home or QGL. idle_timeout.state is the one that
+        reads "Printing" whenever klipper is executing anything.
+        """
+        res = self._probe(
+            "printer.objects.query",
+            {"objects": {"print_stats": ["state"], "idle_timeout": ["state"]}},
+        )
+        status = (res or {}).get("status") or {}
+        return {
+            "print_state": (status.get("print_stats") or {}).get("state"),
+            "idle_state": (status.get("idle_timeout") or {}).get("state"),
+        }
+
     def _print_state(self) -> Optional[str]:
-        res = self._probe("printer.objects.query", {"objects": {"print_stats": ["state"]}})
-        try:
-            return res["status"]["print_stats"]["state"]
-        except (TypeError, KeyError):
+        return self._printer_activity().get("print_state")
+
+    def _klippy_state(self) -> tuple[Optional[str], str]:
+        info = self._probe("printer.info")
+        if not isinstance(info, dict):
+            return None, ""
+        return info.get("state"), str(info.get("state_message") or "")
+
+    #: How long to wait for klippy to report "ready" after the service starts,
+    #: and again after a firmware restart. Class attributes so tests can shrink
+    #: them without patching a call site.
+    KLIPPY_READY_TIMEOUT = 45.0
+    KLIPPY_RESTART_TIMEOUT = 60.0
+    KLIPPY_POLL_INTERVAL = 1.0
+
+    def _await_klippy_ready(
+        self,
+        reporter: Any,
+        *,
+        timeout: Optional[float] = None,
+        after_restart: Optional[float] = None,
+    ) -> Optional[str]:
+        """Wait for klipper to actually be usable, restarting firmware if needed.
+
+        `systemctl is-active klipper` going green is **not** the same as klipper
+        being ready. A board that was mid-motion when we stopped the service comes
+        back with its MCU in a shutdown state, so klippy reaches "error" or
+        "shutdown" and the printer needs a FIRMWARE_RESTART before it will move.
+        Doing that automatically is exactly what a human does by hand.
+        """
+        if self._call is None:
             return None
+        timeout = self.KLIPPY_READY_TIMEOUT if timeout is None else timeout
+        after_restart = self.KLIPPY_RESTART_TIMEOUT if after_restart is None else after_restart
+
+        state = self._poll_klippy(timeout)
+        if state == "ready":
+            reporter("info", "Klipper is ready.")
+            return state
+
+        message = self._klippy_state()[1]
+        reporter(
+            "warn",
+            f"Klipper came up in state '{state}'"
+            + (f": {message}" if message else "")
+            + " - issuing a firmware restart (the MCU was reset by the flash).",
+        )
+        try:
+            self._call("printer.firmware_restart", None, 30.0)
+        except Exception as exc:  # noqa: BLE001
+            reporter("error", f"firmware restart failed: {exc}")
+            return state
+
+        state = self._poll_klippy(after_restart)
+        if state == "ready":
+            reporter("info", "Klipper is ready after the firmware restart.")
+        else:
+            # Deliberately not a job failure: the write itself succeeded, and
+            # Mainsail's own Klippy panel will be showing this loudly. But say
+            # exactly what to do next.
+            reporter(
+                "error",
+                f"Klipper is still in state '{state}' after a firmware restart. "
+                f"Check the Klippy panel, then run FIRMWARE_RESTART from the console.",
+            )
+        return state
+
+    def _poll_klippy(self, timeout: float) -> Optional[str]:
+        deadline = time.monotonic() + timeout
+        state = None
+        while time.monotonic() < deadline:
+            state, _ = self._klippy_state()
+            if state == "ready":
+                return state
+            # "startup" just means it hasn't finished connecting yet.
+            if state in ("error", "shutdown"):
+                return state
+            time.sleep(self.KLIPPY_POLL_INTERVAL)
+        return state
 
     def _call_for_service(self, method: str, params: Any) -> Any:
         """Adapter: ServiceController wants (method, params); _call takes a timeout.

@@ -12,7 +12,7 @@ from klipper_updater.service import (
     Journal,
     MoonrakerService,
     NullService,
-    assert_not_printing,
+    assert_printer_idle,
     klipper_stopped,
     make_controller,
     reconcile,
@@ -158,28 +158,28 @@ def test_moonraker_stop_uses_the_api_when_it_works():
 @pytest.mark.parametrize("state", ["printing", "paused"])
 def test_refuses_to_flash_during_a_print(state):
     with pytest.raises(PrintInProgressError) as exc:
-        assert_not_printing(Settings(), print_state=lambda: state)
+        assert_printer_idle(Settings(), activity=lambda: {"print_state": state, "idle_state": "Ready"})
     assert exc.value.data["state"] == state
 
 
 @pytest.mark.parametrize("state", ["standby", "complete", "cancelled", "error", None])
 def test_allows_flashing_when_idle(state):
-    assert_not_printing(Settings(), print_state=lambda: state)
+    assert_printer_idle(Settings(), activity=lambda: {"print_state": state, "idle_state": "Ready"})
 
 
 def test_force_overrides_the_gate():
-    assert_not_printing(Settings(), print_state=lambda: "printing", force=True)
+    assert_printer_idle(Settings(), activity=lambda: {"print_state": "printing"}, force=True)
 
 
 def test_setting_overrides_the_gate():
-    assert_not_printing(
-        Settings(allow_flash_while_printing=True), print_state=lambda: "printing"
+    assert_printer_idle(
+        Settings(allow_flash_while_printing=True), activity=lambda: {"print_state": "printing"}
     )
 
 
 def test_no_print_state_source_is_a_no_op():
     """The CLI can't query Moonraker, so the check is best-effort there."""
-    assert_not_printing(Settings(), print_state=None)
+    assert_printer_idle(Settings(), activity=None)
 
 
 def test_a_failing_state_query_never_blocks_a_flash():
@@ -187,9 +187,9 @@ def test_a_failing_state_query_never_blocks_a_flash():
         raise OSError("moonraker unreachable")
 
     warnings = []
-    assert_not_printing(
+    assert_printer_idle(
         Settings(),
-        print_state=boom,
+        activity=boom,
         reporter=lambda s, line: warnings.append((s, line)),
     )
     assert any(s == "warn" for s, _ in warnings)
