@@ -1,0 +1,20 @@
+# Line endings are LF everywhere, in the repo *and* in the working tree.
+#
+# This is not a style preference. The tool runs on a Linux printer host, and
+# src/updatefw.py has a `#!/usr/bin/env python3` shebang: if that file ever
+# reaches the Pi with CRLF endings, the kernel reads the interpreter as
+# "python3\r" and you get
+#
+#     bad interpreter: /usr/bin/env python3^M: No such file or directory
+#
+# Pinning eol=lf here means every clone behaves the same regardless of that
+# machine's core.autocrlf, and stops Git warning about the conversion on
+# Windows checkouts (this project is developed on Windows).
+* text=auto eol=lf
+
+# Explicitly binary, so Git never tries to translate them.
+*.png binary
+*.jpg binary
+*.bin binary
+*.uf2 binary
+*.pyc binary
