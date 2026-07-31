@@ -8,6 +8,7 @@ import logging.handlers
 import os
 import signal
 import sys
+import threading
 from typing import Optional
 
 from .. import AGENT_NAME, __version__
@@ -29,6 +30,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=30.0,
         metavar="SECONDS",
         help="On startup, wait this long for the socket to appear (0 to skip)",
+    )
+    p.add_argument(
+        "--shutdown-grace",
+        type=float,
+        default=280.0,
+        metavar="SECONDS",
+        help="On SIGTERM, wait this long for an in-progress flash to finish before "
+        "exiting. Must be less than the unit's TimeoutStopSec.",
     )
     p.add_argument("--version", action="version", version=f"{AGENT_NAME} {__version__}")
     return p
@@ -75,9 +84,20 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     agent = Agent(paths, socket_path=sock, logger=log)
 
+    # Covers `kill -9` on a previous run: if it died with klipper stopped, the
+    # journal says so and klipper gets started before we do anything else.
+    agent.reconcile_startup()
+
     def _shutdown(signum: int, _frame: object) -> None:
         log.info(f"received signal {signum}, shutting down")
-        agent.stop()
+        # Off the handler thread: request_stop may block for minutes waiting for a
+        # flash to finish, and a signal handler must return promptly.
+        threading.Thread(
+            target=agent.request_stop,
+            args=(args.shutdown_grace,),
+            name="shutdown",
+            daemon=True,
+        ).start()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -88,7 +108,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         agent.run_forever()
     except KeyboardInterrupt:  # pragma: no cover
-        agent.stop()
+        agent.request_stop(args.shutdown_grace)
     return 0
 
 

@@ -314,6 +314,136 @@ class Api:
         job = runner.submit("build", {"name": name, "fw": fw}, run)
         return {"job_id": job.id, "job": job.to_dict()}
 
+    def flash(self, args: dict) -> dict[str, Any]:
+        """Flash one board. Returns a job id immediately.
+
+        Every refusal happens *here*, synchronously, before a job exists - so the
+        caller gets a real explanation instead of a job that fails a second later.
+        In order: capability gate, argument validation, type/serial pairing,
+        artifact present, board actually attached, and finally the print gate.
+        """
+        runner = self._require_runner()
+        settings = self.settings()
+
+        # Deliberately off by default: updating the agent must never silently
+        # grant a browser the ability to reflash the printer.
+        if not settings.enable_flashing:
+            raise RpcError(
+                "flashing from the web UI is disabled. Set 'enable_flashing = true' in "
+                f"{self.paths.settings_file} and restart the agent to allow it.",
+                data={
+                    "code": "flashing_disabled",
+                    "message": "enable_flashing is false",
+                    "data": {"settings_file": self.paths.settings_file},
+                },
+            )
+
+        serial = args.get("serial")
+        if not serial:
+            raise RpcError("'serial' is required", ERR_INVALID_PARAMS)
+        serial = str(serial)
+        name = args.get("name")
+        force = bool(args.get("force"))
+
+        reg = self.registry()
+        # resolve_serial raises unknown_serial / ambiguous_serial /
+        # serial_tracked_elsewhere, all of which the panel switches on by code.
+        mcu_type = reg.resolve_serial(serial, str(name) if name else None)
+        mcu = reg.get(mcu_type)
+
+        fw_bin = self.paths.bin_file(mcu_type, "klipper")
+        if not os.path.exists(fw_bin):
+            raise RpcError(
+                f"no built firmware for {mcu_type} at {fw_bin}. Build it first.",
+                data={
+                    "code": "no_artifact",
+                    "message": "firmware has not been built",
+                    "data": {"type": mcu_type, "path": fw_bin},
+                },
+            )
+
+        # Fail now if the board isn't on the bus, rather than after stopping
+        # klipper. Katapult means it's already in the bootloader.
+        from ..devices import find_device
+
+        if find_device(self.paths, mcu.chipset, serial) is None:
+            raise RpcError(
+                f"{serial} is not attached (looked for chipset {mcu.chipset}). "
+                f"Is it plugged in and powered?",
+                data={
+                    "code": "device_not_found",
+                    "message": "board is not on the bus",
+                    "data": {"serial": serial, "chipset": mcu.chipset},
+                },
+            )
+
+        # Last gate, and the one that protects a print in progress.
+        from ..service import assert_not_printing
+
+        assert_not_printing(
+            settings, print_state=self._print_state, force=force, reporter=self._log_reporter
+        )
+
+        def run(ctx) -> dict[str, Any]:
+            from ..flash import flash_katapult
+            from ..service import klipper_stopped, make_controller
+
+            svc = make_controller(self.settings(), call=self._call_for_service)
+            ctx.step(f"Stopping {svc.name}", 0, 3)
+            with klipper_stopped(
+                self.paths, svc, f"flash {serial}", reporter=ctx.reporter
+            ):
+                ctx.step(f"Flashing {serial}", 1, 3)
+                # No cancel is threaded into the write on purpose - interrupting
+                # flashtool leaves half an image on the board.
+                flash_katapult(
+                    self.paths,
+                    self.settings(),
+                    mcu_type,
+                    mcu.chipset,
+                    serial,
+                    fw_bin=fw_bin,
+                    reporter=ctx.reporter,
+                )
+                ctx.step(f"Restarting {svc.name}", 2, 3)
+            ctx.step("Done", 3, 3)
+            return {"type": mcu_type, "serial": serial, "fw_bin": fw_bin}
+
+        job = runner.submit("flash", {"name": mcu_type, "serial": serial}, run)
+        return {"job_id": job.id, "job": job.to_dict()}
+
+    def _log_reporter(self, stream: str, line: str) -> None:
+        """Send a core Reporter's output to the agent log.
+
+        Used for checks that run outside a job, where there is no job log to
+        collect into but the message still matters - e.g. "could not determine
+        print state, continuing".
+        """
+        if self._log is None:
+            return
+        if stream in ("warn", "error"):
+            self._log.warning(line)
+        else:
+            self._log.debug(line)
+
+    def _print_state(self) -> Optional[str]:
+        res = self._probe("printer.objects.query", {"objects": {"print_stats": ["state"]}})
+        try:
+            return res["status"]["print_stats"]["state"]
+        except (TypeError, KeyError):
+            return None
+
+    def _call_for_service(self, method: str, params: Any) -> Any:
+        """Adapter: ServiceController wants (method, params); _call takes a timeout.
+
+        Service calls get a longer budget than status probes - stopping klipper
+        genuinely takes a moment, and timing out here would look like a failure
+        and abort a flash that was about to be fine.
+        """
+        if self._call is None:
+            raise RpcError("no moonraker connection")
+        return self._call(method, params, 30.0)
+
     def job_get(self, args: dict) -> dict[str, Any]:
         """A job plus a slice of its log.
 
@@ -368,18 +498,29 @@ class Api:
         "fw.artifacts": "artifacts",
         "fw.settings.get": "settings_get",
         "fw.build": "build",
+        "fw.flash": "flash",
         "fw.job.get": "job_get",
         "fw.job.cancel": "job_cancel",
     }
 
     #: Registered with Moonraker only when a runner is present, so a read-only
     #: deployment doesn't advertise controls it cannot honour.
-    JOB_METHODS = ("fw.build", "fw.job.get", "fw.job.cancel")
+    JOB_METHODS = ("fw.build", "fw.flash", "fw.job.get", "fw.job.cancel")
+
+    #: Advertised only when enable_flashing is on. The panel hides its flash
+    #: buttons accordingly, rather than offering something that gets refused.
+    FLASH_METHODS = ("fw.flash",)
 
     def available_methods(self) -> dict[str, str]:
-        if self.runner is not None:
-            return dict(self.METHODS)
-        return {k: v for k, v in self.METHODS.items() if k not in self.JOB_METHODS}
+        out = dict(self.METHODS)
+        if self.runner is None:
+            for name in self.JOB_METHODS:
+                out.pop(name, None)
+            return out
+        if not self.settings().enable_flashing:
+            for name in self.FLASH_METHODS:
+                out.pop(name, None)
+        return out
 
     # -- dispatch ----------------------------------------------------------
 

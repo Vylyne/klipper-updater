@@ -128,6 +128,26 @@ class UnsupportedChipsetError(UpdaterError):
     code = "unsupported_chipset"
 
 
+class ServiceControlError(UpdaterError):
+    """Could not stop or start the klipper service.
+
+    Raised rather than continuing: flashing while klipper holds the serial port
+    is unsafe, so a failed stop must abort the operation.
+    """
+
+    code = "service_control"
+
+
+class FlashingDisabledError(UpdaterError):
+    """The agent's flash capability is switched off in updater.conf.
+
+    Off by default so that installing an update never silently grants a browser
+    the ability to reflash the printer.
+    """
+
+    code = "flashing_disabled"
+
+
 # --- concurrency / safety ---
 
 

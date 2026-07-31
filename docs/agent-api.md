@@ -6,7 +6,8 @@ truth** — and `tests/test_agent_methods.py` is what stops them drifting.
 
 - Agent name: `klipper_updater`
 - `api_version`: **1**
-- Phase: **2** (can build; still cannot flash or mutate the registry)
+- Phase: **3** (can build, and can flash one board at a time when explicitly
+  enabled; cannot yet flash a whole type, run update-all, or mutate the registry)
 
 **Gate controls on `capabilities` from `fw.ping`, not on `phase`.** An agent
 without a job runner does not register or advertise the job methods at all, so a
@@ -84,6 +85,7 @@ application error (see `data.code`), `-32603` internal.
 | `fw.artifacts` | `name` (required) | `{klipper: Artifact, katapult: Artifact}` |
 | `fw.settings.get` | — | `{settings: Settings}` |
 | `fw.build` | `name`, `fw`, `jobs?`, `clean?` | `{job_id, job}` — returns immediately |
+| `fw.flash` | `serial`, `name?`, `force?` | `{job_id, job}` — **off by default**, see below |
 | `fw.job.get` | `job_id?`, `log_from?` | `{job, log, log_from, log_next, log_dropped}` |
 | `fw.job.cancel` | `job_id?` | `{cancelling, immediate}` |
 
@@ -218,6 +220,65 @@ moment later.
 | `flash`, `flash_type` | **Deferred** — honoured only *between* devices. Interrupting a `flashtool -f` write leaves a board with half an image. Show "cancelling after the current board finishes…". |
 | `update_all` | Deferred between types and devices; the in-flight build is cancellable. |
 
+### `fw.flash` — the dangerous one
+
+Flashing stops Klipper and writes to a board. It is therefore **not advertised
+unless it is explicitly switched on**:
+
+```ini
+# ~/mcus/updater.conf
+[updater]
+enable_flashing = true
+```
+
+Off by default so that updating the agent never silently grants a browser the
+ability to reflash the printer. While off, `fw.flash` is absent from
+`capabilities` and returns `-32601`; called directly it returns
+`flashing_disabled`. **The CLI ignores this setting entirely** — it has always
+been able to flash, and Phase 0 didn't change that.
+
+Every refusal happens synchronously, before a job exists, so the caller gets a
+real explanation instead of a job that dies a second later. In order:
+
+| Check | Error code |
+| --- | --- |
+| capability gate | `flashing_disabled` |
+| `serial` present | `-32602` |
+| serial resolves to a type | `unknown_serial` / `ambiguous_serial` / `serial_tracked_elsewhere` |
+| firmware has been built | `no_artifact` |
+| board is on the bus | `device_not_found` |
+| no print running | `print_in_progress` (bypass with `force: true`) |
+
+The board check is up front on purpose: discovering a detached board *after*
+stopping Klipper would mean an outage for nothing.
+
+Once running, the job stops Klipper, writes, and restarts it — Klipper is down
+only for the write itself. **The stop is verified.** If Klipper is still running
+after the stop request (no passwordless sudo, Moonraker unreachable, a wedged
+unit) the job aborts with `service_control` rather than flashing anyway, because
+Klipper holds the serial port and writing into that contention is unsafe.
+
+Cancellation is **deferred** for a flash (`immediate: false`) — see the table
+above. Show "cancelling after the current board finishes…", not a spinner.
+
+#### Getting Klipper back is the release gate
+
+Four independent layers, because this is the one failure that leaves a printer
+dead until a human notices:
+
+1. the `finally` in `klipper_stopped()`;
+2. `MoonrakerService.start()` falling through to `sudo systemctl start klipper`
+   if Moonraker itself has gone away;
+3. a journal at `~/mcus/.updater.state`, written before the stop and cleared
+   after the start, which the agent reconciles on startup — this is what covers
+   `kill -9`, where no `finally` ever runs;
+4. `ExecStopPost` on the systemd unit.
+
+The agent also **refuses to exit while a flash is in progress** (SIGTERM is
+deferred up to `--shutdown-grace`, under the unit's `TimeoutStopSec`), because
+`systemctl restart klipper-updater` mid-write would otherwise leave half an image
+on a board.
+
 ### The log, and its sequence numbers
 
 Every log line gets a monotonic index, starting at 0. A `log` event carries the
@@ -298,9 +359,14 @@ No polling needed:
 Reserved names, not yet implemented — the agent returns `-32601` for these and
 does not advertise them, which is why the panel gates on `capabilities`:
 
-`fw.flash`, `fw.flash_type`, `fw.update_all`, `fw.type.add`, `fw.type.update`,
+`fw.flash_type`, `fw.update_all`, `fw.type.add`, `fw.type.update`,
 `fw.type.remove`, `fw.serial.add`, `fw.serial.remove`, `fw.settings.set`,
 `fw.kconfig.*`, `fw.add_mcu.start`, `fw.add_mcu.confirm`.
+
+`fw.flash_type` and `fw.update_all` are deliberately held back until
+single-board flashing has proved itself: `update_all` on a ten-board fleet is
+four builds plus ten sequential writes with Klipper down throughout, which is a
+much wider window for something to go wrong in.
 
 `fw.build` deliberately refuses a type with no saved `.config`, returning
 `no_saved_config` with the exact CLI command to run. `menuconfig` is an ncurses

@@ -48,8 +48,8 @@ function preflight_checks {
 }
 
 function check_paths {
-    # Warnings, not errors: the agent is read-only in this phase and is still
-    # useful for viewing status even if you cannot build or flash yet.
+    # Warnings, not errors: the agent is still worth having for status alone, and
+    # the individual capabilities degrade rather than the whole thing failing.
     if [ ! -d "${KLIPPER_PATH}" ]; then
         echo "[WARN] ${KLIPPER_PATH} not found - klipper firmware cannot be built."
     fi
@@ -173,6 +173,55 @@ function add_update_manager {
     fi
 }
 
+function allow_sudo_fallback {
+    # The normal path needs no sudo: the agent stops klipper through Moonraker's
+    # machine.services API. This is purely the safety net for Moonraker dying
+    # between the stop and the start, when that API is unreachable and the agent
+    # would otherwise be unable to bring klipper back.
+    local target="/etc/sudoers.d/klipper-updater"
+    if [ -f "${target}" ]; then
+        printf "[SUDO] Fallback rule already installed.\n\n"
+        return 0
+    fi
+
+    cat <<EOF
+[SUDO] Optional safety net.
+
+  The agent stops klipper via Moonraker, which needs no special privileges. But
+  if Moonraker dies *between* the stop and the start, the agent cannot put
+  klipper back, and the printer stays down until you notice.
+
+  Installing a narrow sudoers rule (three exact systemctl commands for the
+  klipper unit, no wildcards) lets the agent recover on its own. Declining is
+  safe - the systemd unit's ExecStopPost still covers some cases - but the net
+  is weaker, and the CLI will prompt for a password when it stops klipper.
+
+EOF
+    local answer=""
+    read -r -p "[SUDO] Install /etc/sudoers.d/klipper-updater? [y/N]: " answer || answer=""
+    case "${answer}" in
+        y | Y | yes | YES) ;;
+        *)
+            printf "[SUDO] Skipped.\n\n"
+            return 0
+            ;;
+    esac
+
+    local tmp
+    tmp="$(mktemp)"
+    sed -e "s|%USER%|${USER}|g" "${INSTALL_PATH}/scripts/sudoers.d-klipper-updater" > "${tmp}"
+    # Validate before installing: a malformed sudoers file can lock you out of
+    # sudo entirely, so never copy one in unchecked.
+    if sudo visudo -c -f "${tmp}" >/dev/null 2>&1; then
+        sudo install -m 0440 -o root -g root "${tmp}" "${target}"
+        printf "[SUDO] Installed %s\n\n" "${target}"
+    else
+        echo "[ERROR] Generated sudoers file failed validation; not installing it."
+        sudo visudo -c -f "${tmp}" || true
+    fi
+    rm -f "${tmp}"
+}
+
 function restart_moonraker {
     echo "[MOONRAKER] Restarting Moonraker so the new config applies..."
     sudo systemctl restart moonraker
@@ -207,7 +256,13 @@ function print_next_steps {
    [update_manager mainsail]
    repo: Vylyne/mainsail        # was mainsail-crew/mainsail
 
- This agent is READ-ONLY. It cannot build or flash anything yet.
+ Flashing from the web UI is OFF by default. To enable it, add to
+ ${SETTINGS_PATH}/updater.conf:
+
+   [updater]
+   enable_flashing = true
+
+ ...then: sudo systemctl restart ${SERVICE_NAME}
 ================================================================
 EOF
 }
@@ -219,5 +274,6 @@ migrate_legacy_service
 install_service
 add_asvc
 add_update_manager
+allow_sudo_fallback
 restart_moonraker
 print_next_steps

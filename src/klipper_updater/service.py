@@ -25,7 +25,7 @@ from collections.abc import Iterator
 from typing import Any, Callable, Optional
 
 from .build import Reporter, null_reporter
-from .errors import PrintInProgressError
+from .errors import PrintInProgressError, ServiceControlError
 from .paths import Paths
 from .settings import Settings
 
@@ -139,22 +139,30 @@ class MoonrakerService(ServiceController):
 
 
 class NullService(ServiceController):
-    """Narrates instead of acting. Used by dry-run and tests."""
+    """Narrates instead of acting. Used by dry-run and tests.
+
+    Tracks its own state rather than always claiming to be active, because
+    klipper_stopped() verifies that a stop actually took effect - a NullService
+    that lied about being up would make every dry run fail that check.
+    """
 
     def __init__(self, name: str = "klipper") -> None:
         self.name = name
         self.actions: list[str] = []
+        self._active = True
 
     def stop(self, reporter: Reporter = null_reporter) -> None:
         self.actions.append("stop")
+        self._active = False
         reporter("info", f"[dry-run] would stop {self.name}")
 
     def start(self, reporter: Reporter = null_reporter) -> None:
         self.actions.append("start")
+        self._active = True
         reporter("info", f"[dry-run] would start {self.name}")
 
     def is_active(self) -> bool:
-        return True
+        return self._active
 
 
 def make_controller(
@@ -237,6 +245,10 @@ def reconcile(
     return True
 
 
+#: How long to wait for a stop to actually take effect before giving up.
+STOP_VERIFY_TIMEOUT = 20.0
+
+
 @contextlib.contextmanager
 def klipper_stopped(
     paths: Paths,
@@ -244,11 +256,19 @@ def klipper_stopped(
     label: str,
     *,
     reporter: Reporter = null_reporter,
+    verify: bool = True,
+    verify_timeout: float = STOP_VERIFY_TIMEOUT,
 ) -> Iterator[None]:
     """Stop the service for the duration of the block, then put it back.
 
     Idempotent: if klipper was already stopped on entry, it is left stopped on
     exit rather than being helpfully started - the user stopped it for a reason.
+
+    **The stop is verified.** If klipper is still running - no passwordless sudo,
+    Moonraker unreachable, a wedged unit - this raises instead of continuing.
+    Flashing with klipper up means klipper is holding the serial port, so the
+    write would either fail outright or fight for the device. Refusing is the
+    only safe answer.
     """
     was_active = svc.is_active()
     journal = Journal(paths)
@@ -260,9 +280,32 @@ def klipper_stopped(
 
     journal.record_stop(svc.name, label)
     svc.stop(reporter)
+
+    if verify:
+        deadline = time.monotonic() + verify_timeout
+        while svc.is_active():
+            if time.monotonic() >= deadline:
+                # Put it back the way we found it before bailing out: we asked it
+                # to stop and it may yet comply, so don't leave it ambiguous.
+                try:
+                    svc.start(reporter)
+                finally:
+                    journal.clear()
+                raise ServiceControlError(
+                    f"could not stop '{svc.name}' within {verify_timeout:.0f}s - refusing to "
+                    f"continue, because flashing while klipper holds the serial port is unsafe. "
+                    f"Check passwordless sudo for systemctl, or that klipper is in "
+                    f"~/printer_data/moonraker.asvc.",
+                    service=svc.name,
+                )
+            time.sleep(0.5)
+        reporter("info", f"{svc.name} confirmed stopped.")
+
     try:
         yield
     finally:
+        # Belt and braces: this is the single most important line in the project.
+        # Whatever happened above, klipper has to come back.
         try:
             svc.start(reporter)
         finally:

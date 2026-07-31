@@ -23,18 +23,28 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%INSTALL_DIR%/src
 ExecStart=%PYTHON% -m klipper_updater.agent \
     --socket %PRINTER_DATA%/comms/moonraker.sock \
-    --log %PRINTER_DATA%/logs/klipper-updater.log
+    --log %PRINTER_DATA%/logs/klipper-updater.log \
+    --shutdown-grace 280
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 
-# This agent is read-only: it never stops klipper, so it needs no privileges and
-# no shutdown grace period. When the flash phase lands, this unit gains
-#   TimeoutStopSec=300
-#   ExecStopPost=/bin/sh -c 'systemctl is-active --quiet klipper || systemctl start klipper'
-# plus a SIGTERM handler that defers exit while a flash is in progress - because
-# `systemctl restart` mid-flash would otherwise brick a board.
+# The agent can stop klipper to flash a board, so shutdown has to be careful.
 #
+# TimeoutStopSec must exceed --shutdown-grace: on SIGTERM the agent refuses to
+# exit while a flash is in progress, because killing flashtool part-way leaves a
+# board with half an image. systemd would otherwise SIGKILL it mid-write.
+TimeoutStopSec=300
+
+# Outermost safety net. If the agent dies in a way that skips every other layer -
+# SIGKILL, OOM, a panic - klipper could be left stopped and the printer dead until
+# someone notices. This runs even then.
+#
+# The other three layers, in order of preference: the finally block in
+# klipper_stopped(); MoonrakerService.start() falling through to systemctl; and
+# the journal at ~/mcus/.updater.state, which the agent reconciles on startup.
+ExecStopPost=/bin/sh -c 'systemctl is-active --quiet klipper || systemctl start klipper'
+
 # The log lands in printer_data/logs so it sits with the others and is reachable
 # through Moonraker's file manager. Note it will NOT appear in Mainsail's
 # Logfiles panel: that panel renders a hardcoded list (klippy, moonraker,

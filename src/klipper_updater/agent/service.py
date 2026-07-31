@@ -21,7 +21,7 @@ import time
 from typing import Any, Optional
 
 from .. import AGENT_NAME, __version__
-from ..jobs import Job, JobRunner
+from ..jobs import IMMEDIATELY_CANCELLABLE, Job, JobRunner
 from ..paths import Paths
 from ..settings import Settings, load_settings
 from .events import BusWatcher, EventEmitter, LogBatcher
@@ -120,6 +120,29 @@ class Agent:
 
     # -- lifecycle ---------------------------------------------------------
 
+    def request_stop(self, timeout: float = 300.0) -> None:
+        """Shut down, but never in the middle of a write.
+
+        `systemctl restart klipper-updater` during a flash would otherwise kill
+        flashtool part-way and leave a board with half an image. A build is safe
+        to interrupt, so only the non-interruptible kinds defer. The unit's
+        TimeoutStopSec must exceed this.
+        """
+        job = self.runner.current()
+        if job is not None and job.kind not in IMMEDIATELY_CANCELLABLE:
+            self.log.warning(
+                f"deferring shutdown: {job.kind} job {job.id} is in progress and cannot "
+                f"be safely interrupted (waiting up to {timeout:.0f}s)"
+            )
+            if not self.runner.wait(timeout):
+                self.log.error(
+                    f"{job.kind} job {job.id} did not finish within {timeout:.0f}s; "
+                    f"shutting down anyway"
+                )
+            else:
+                self.log.info(f"{job.kind} job finished; continuing shutdown")
+        self.stop()
+
     def stop(self) -> None:
         self._stop.set()
         self.watcher.stop()
@@ -127,6 +150,23 @@ class Agent:
         peer = self._peer
         if peer is not None:
             peer.close()
+
+    def reconcile_startup(self) -> None:
+        """If a previous run died with klipper stopped, start it back up.
+
+        This is the layer that covers `kill -9` mid-flash, where no finally block
+        and no fallback chain ever runs.
+        """
+        from ..service import make_controller, reconcile
+
+        try:
+            reconcile(
+                self.paths,
+                make_controller(self._settings()),
+                reporter=lambda stream, line: self.log.warning(line),
+            )
+        except Exception as exc:  # noqa: BLE001 - must never block startup
+            self.log.warning(f"could not reconcile a previous run: {exc}")
 
     def emit_state(self) -> None:
         try:

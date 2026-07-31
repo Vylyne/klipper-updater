@@ -155,7 +155,7 @@ def test_identify_sends_exactly_the_four_required_fields(wired):
 def test_every_method_is_registered(wired):
     agent, server = wired
     _run(agent)
-    expected = set(agent.api.METHODS)
+    expected = set(agent.api.available_methods())
     assert server.wait_for(
         lambda: len(server.methods_called("connection.register_remote_method")) >= len(expected)
     )
@@ -290,7 +290,7 @@ def test_registration_repeats_on_every_reconnect(paths, live_registry_text):
 
     agent = Agent(paths, socket_path="unused", peer_factory=factory)
     agent.watcher.idle_interval = 3600
-    expected = set(agent.api.METHODS)
+    expected = set(agent.api.available_methods())
 
     def registered_on(server: FakeMoonraker) -> set:
         return {
@@ -406,10 +406,15 @@ def test_a_build_driven_over_the_wire_streams_job_and_log_events(wired, paths):
         assert event["data"]["seq"] == event["data"]["lines"][0]["i"]
 
 
-def test_a_build_can_be_cancelled_over_the_wire(wired, paths):
+def test_a_build_can_be_cancelled_over_the_wire(wired, paths, monkeypatch):
     import os
 
     agent, server = wired
+    # The autouse fixture makes dry-run builds instant, which means the job can
+    # finish before the cancel arrives. Slow it down so this tests cancellation
+    # rather than scheduling luck.
+    monkeypatch.setattr("klipper_updater.build.FAKE_BUILD_DELAY", 0.03)
+
     with open(paths.settings_file, "w", encoding="utf-8") as fh:
         fh.write("[updater]\ndry_run = true\nservice_backend = null\n")
     os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)
@@ -429,14 +434,18 @@ def test_a_build_can_be_cancelled_over_the_wire(wired, paths):
     )
     assert server.wait_for(lambda: any(r["id"] == 600 for r in server.responses))
 
-    server.send({"jsonrpc": "2.0", "id": 601, "method": "fw.job.cancel", "params": {}})
+    job_id = reply_job_id(server, 600)
+    server.send(
+        {"jsonrpc": "2.0", "id": 601, "method": "fw.job.cancel", "params": {"job_id": job_id}}
+    )
     assert server.wait_for(lambda: any(r["id"] == 601 for r in server.responses))
     cancel_reply = next(r for r in server.responses if r["id"] == 601)
+    assert "error" not in cancel_reply, cancel_reply
     assert cancel_reply["result"]["cancelling"] is True
     assert cancel_reply["result"]["immediate"] is True, "a build stops straight away"
 
     assert agent.runner.wait(timeout=60)
-    assert agent.runner.get(reply_job_id(server, 600)).state in ("cancelled", "succeeded")
+    assert agent.runner.get(job_id).state == "cancelled"
 
 
 def reply_job_id(server: FakeMoonraker, request_id: int) -> str:

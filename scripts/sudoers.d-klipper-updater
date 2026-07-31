@@ -1,0 +1,16 @@
+# Installed to /etc/sudoers.d/klipper-updater (mode 0440) by install.sh, only if
+# you accept the prompt. %USER% is substituted there.
+#
+# Not needed for the normal path: the agent stops and starts klipper through
+# Moonraker's machine.services API, which is already privileged and gated by
+# ~/printer_data/moonraker.asvc.
+#
+# This exists for the case that actually hurts - Moonraker dying between the stop
+# and the start. The API is then unreachable, and without this the agent cannot
+# put klipper back, leaving the printer dead until someone notices and SSHes in.
+# It is also what the unit's ExecStopPost safety net uses.
+#
+# Deliberately narrow: three exact commands for one unit, no wildcards.
+%USER% ALL=(root) NOPASSWD: /bin/systemctl start klipper
+%USER% ALL=(root) NOPASSWD: /bin/systemctl stop klipper
+%USER% ALL=(root) NOPASSWD: /bin/systemctl is-active klipper
