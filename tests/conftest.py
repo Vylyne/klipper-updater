@@ -19,7 +19,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 #: The real registry from the printer, committed at the repo root. Used directly
 #: as a fixture so the test suite fails if that sample is ever broken.
-LIVE_MCUS_JSON = REPO_ROOT / "mcus.json"
+LIVE_MCUS_CFG = REPO_ROOT / "mcus.cfg"
 
 
 @pytest.fixture(autouse=True)
@@ -34,12 +34,14 @@ def _instant_fake_builds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def fake_root(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A pretend ~ containing mcus/, a bus directory, and klipper/katapult trees."""
-    (tmp_path / "mcus").mkdir()
+    """A pretend ~ laid out the way a printer host is."""
     (tmp_path / "bus").mkdir()
     (tmp_path / "klipper" / "src").mkdir(parents=True)
     (tmp_path / "katapult" / "src").mkdir(parents=True)
     (tmp_path / "printer_data" / "comms").mkdir(parents=True)
+    # Hand-edited config, and build artifacts, deliberately in separate trees.
+    (tmp_path / "printer_data" / "config" / "klipper-updater").mkdir(parents=True)
+    (tmp_path / "printer_data" / "klipper-updater").mkdir(parents=True)
     return tmp_path
 
 
@@ -61,7 +63,7 @@ def settings() -> Settings:
 
 @pytest.fixture
 def live_registry_text() -> str:
-    return LIVE_MCUS_JSON.read_text(encoding="utf-8")
+    return LIVE_MCUS_CFG.read_text(encoding="utf-8")
 
 
 def cmd_tokens(cmd_line: str) -> list[str]:

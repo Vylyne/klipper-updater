@@ -1,45 +1,48 @@
-"""The MCU registry: ``~/mcus/mcus.json``.
+"""The MCU registry: ``~/printer_data/config/klipper-updater/mcus.cfg``.
 
-Schema, as it actually exists on a live printer::
+Klipper-style, because it lives next to ``printer.cfg`` and gets hand-edited::
 
-    {
-      "flylllplusbuffer": {
-        "chipset": "stm32f072xb",
-        "katapult": {"installed": true, "extra_args": ""},
-        "klipper":  {"makefile_patches": [{"file": "src/Makefile",
-                                          "line": "src-y += buffer.c"}],
-                     "extra_args": ""},
-        "serials": ["4C0033000957465331323720-if00", ...]
-      }
-    }
+    # Toolhead boards. The buffer patch is specific to this batch.
+    [mcu flylllplusbuffer]
+    chipset: stm32f072xb
+    serials:
+        4C0033000957465331323720-if00
+        3F0037000957465331323720-if00
+    klipper_makefile_patches:
+        src/Makefile -> src-y += buffer.c
 
-Three per-firmware keys, and that is all: ``extra_args`` (appended to the make
-command line), ``installed`` (katapult only), and ``makefile_patches``.
+Per-type keys, and that is all:
 
-An older ``extra_src`` key predates ``makefile_patches`` and meant something
-different - it was appended to ``src/Makefile``, because klipper's build system
-has no way to add ``src-y +=`` lines from the command line. It is handled here
-for anyone still carrying one, but note it is NOT a synonym for ``extra_args``:
-feeding ``src-$(CONFIG_MACH_STM32F072) += buffer.c`` to make produces three
-bogus goals and a failed build.
+``chipset``
+    Required. Matches the chipset segment of the /dev/serial/by-id name.
+``serials``
+    One tracked board per line.
+``katapult_installed``
+    Only written when false; a board with no bootloader is the exception.
+``<fw>_extra_args``
+    Appended to the make command line.
+``<fw>_makefile_patches``
+    ``<file> -> <line>`` per line. Appended to that Makefile for the duration of
+    one build, then reverted. This exists because Klipper's build system has no
+    way to add ``src-y +=`` lines from the command line, and a permanent edit
+    would leak into every other type sharing the chipset.
 
-Round-trip fidelity is a hard requirement. This file is hand-edited, so
-unrecognised keys and key ordering are preserved: every ``to_json`` starts from
-the dict it was parsed from and only overwrites what it owns.
+Writes go through :mod:`cfgdoc`, so comments, ordering and unrecognised keys
+survive the panel editing the file.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
-import re
 from collections.abc import Iterable
 from typing import Any, Optional
 
+from .cfgdoc import CfgDocument
 from .errors import (
     AmbiguousSerialError,
     ConfigCorruptError,
+    ConfigError,
     DuplicateTypeError,
     SerialTrackedElsewhereError,
     UnknownSerialError,
@@ -47,9 +50,22 @@ from .errors import (
 )
 from .paths import FW_TARGETS, Paths
 
-#: A legacy extra_src value shaped like a Makefile source line, e.g.
-#: "src-y += buffer.c" or "src-$(CONFIG_MACH_STM32F072) += foo.c".
-_MAKEFILE_SRC_LINE = re.compile(r"^\s*src-\S*\s*\+=")
+SECTION_PREFIX = "mcu"
+PATCH_SEPARATOR = "->"
+
+_TRUE = {"true", "yes", "on", "1"}
+_FALSE = {"false", "no", "off", "0"}
+
+
+def _parse_bool(raw: Optional[str], default: bool) -> bool:
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    return default
 
 
 @dataclasses.dataclass
@@ -59,8 +75,15 @@ class MakefilePatch:
     line: str
 
     @classmethod
-    def from_json(cls, d: dict[str, Any]) -> MakefilePatch:
-        return cls(file=str(d.get("file", "")), line=str(d.get("line", "")))
+    def parse(cls, raw: str) -> Optional[MakefilePatch]:
+        if PATCH_SEPARATOR not in raw:
+            return None
+        target, _, line = raw.partition(PATCH_SEPARATOR)
+        patch = cls(file=target.strip(), line=line.strip())
+        return patch if patch.is_valid() else None
+
+    def render(self) -> str:
+        return f"{self.file} {PATCH_SEPARATOR} {self.line}"
 
     def to_json(self) -> dict[str, Any]:
         return {"file": self.file, "line": self.line}
@@ -72,53 +95,16 @@ class MakefilePatch:
 @dataclasses.dataclass
 class FwConfig:
     extra_args: str = ""
-    #: None means the key was absent. Only katapult blocks carry it.
+    #: None means "not specified". Only katapult blocks carry it.
     installed: Optional[bool] = None
     makefile_patches: list[MakefilePatch] = dataclasses.field(default_factory=list)
-    #: Everything we didn't recognise, kept so a save doesn't destroy it.
-    _raw: dict[str, Any] = dataclasses.field(default_factory=dict, repr=False)
-
-    @classmethod
-    def from_json(cls, d: Any) -> FwConfig:
-        if not isinstance(d, dict):
-            return cls()
-        patches = [
-            MakefilePatch.from_json(p)
-            for p in d.get("makefile_patches") or []
-            if isinstance(p, dict)
-        ]
-        extra_args = str(d.get("extra_args", "") or "")
-
-        # Legacy extra_src: a Makefile source line becomes a patch; anything
-        # else was almost certainly meant as make arguments.
-        legacy = str(d.get("extra_src", "") or "").strip()
-        if legacy:
-            if _MAKEFILE_SRC_LINE.match(legacy):
-                patches.append(MakefilePatch(file="src/Makefile", line=legacy))
-            elif not extra_args:
-                extra_args = legacy
-
-        installed = d.get("installed")
-        return cls(
-            extra_args=extra_args,
-            installed=bool(installed) if installed is not None else None,
-            makefile_patches=patches,
-            _raw=dict(d),
-        )
 
     def to_json(self) -> dict[str, Any]:
-        out = dict(self._raw)
-        out.pop("extra_src", None)  # migrated into extra_args / makefile_patches
-        out["extra_args"] = self.extra_args
-        if self.installed is None:
-            out.pop("installed", None)
-        else:
+        out: dict[str, Any] = {"extra_args": self.extra_args}
+        if self.installed is not None:
             out["installed"] = self.installed
-        valid = [p for p in self.makefile_patches if p.is_valid()]
-        if valid:
-            out["makefile_patches"] = [p.to_json() for p in valid]
-        else:
-            out.pop("makefile_patches", None)
+        if self.makefile_patches:
+            out["makefile_patches"] = [p.to_json() for p in self.makefile_patches]
         return out
 
 
@@ -128,97 +114,144 @@ class McuType:
     chipset: str = ""
     serials: list[str] = dataclasses.field(default_factory=list)
     fws: dict[str, FwConfig] = dataclasses.field(default_factory=dict)
-    _raw: dict[str, Any] = dataclasses.field(default_factory=dict, repr=False)
-
-    @classmethod
-    def from_json(cls, name: str, d: Any) -> McuType:
-        if not isinstance(d, dict):
-            d = {}
-        serials = [str(s) for s in (d.get("serials") or []) if s]
-        fws = {fw: FwConfig.from_json(d.get(fw)) for fw in FW_TARGETS}
-        return cls(
-            name=name,
-            chipset=str(d.get("chipset", "") or ""),
-            serials=serials,
-            fws=fws,
-            _raw=dict(d),
-        )
 
     def fw(self, fw: str) -> FwConfig:
         return self.fws.setdefault(fw, FwConfig())
 
     @property
     def katapult_installed(self) -> bool:
-        """Absent `installed` is treated as True - a board with no bootloader is the exception."""
+        """Absent means True - a board with no bootloader is the exception."""
         val = self.fw("katapult").installed
         return True if val is None else val
 
     def to_json(self) -> dict[str, Any]:
-        out = dict(self._raw)
-        out["chipset"] = self.chipset
+        out: dict[str, Any] = {"chipset": self.chipset}
         for fw in FW_TARGETS:
             cfg = self.fws.get(fw)
-            if cfg is None:
-                continue
-            # Only emit a firmware block if it was already there or has content.
-            body = cfg.to_json()
-            if fw in self._raw or body.get("extra_args") or body.get("makefile_patches"):
-                out[fw] = body
+            if cfg is not None:
+                out[fw] = cfg.to_json()
         out["serials"] = list(self.serials)
         return out
 
 
-class Registry:
-    """In-memory view of mcus.json with faithful save semantics."""
+def section_name(mcu_type: str) -> str:
+    return f"{SECTION_PREFIX} {mcu_type}"
 
-    def __init__(self, types: dict[str, McuType], raw: dict[str, Any]) -> None:
+
+class Registry:
+    """In-memory view of mcus.cfg, backed by a comment-preserving document."""
+
+    def __init__(self, types: dict[str, McuType], doc: CfgDocument) -> None:
         self.types = types
-        self._raw = raw
+        self._doc = doc
 
     # --- construction / persistence ---
 
     @classmethod
     def load(cls, paths: Paths) -> Registry:
-        path = paths.mcus_json
-        if not os.path.exists(path) or os.path.getsize(path) == 0:
-            return cls({}, {})
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read()
+        path = paths.registry_file
+        if not os.path.exists(path):
+            cls._refuse_if_legacy(paths)
+            return cls({}, CfgDocument())
+
         try:
-            raw = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ConfigCorruptError(
-                f"{path} is not valid JSON (line {exc.lineno}, column {exc.colno}): {exc.msg}. "
-                f"Fix or restore it - refusing to continue, because treating this as "
-                f"'no MCU types configured' risks overwriting the whole registry.",
-                path=path,
-                line=exc.lineno,
-                column=exc.colno,
-            ) from exc
-        if not isinstance(raw, dict):
-            raise ConfigCorruptError(
-                f"{path} must contain a JSON object mapping type names to configs, "
-                f"got {type(raw).__name__}",
-                path=path,
-            )
-        types = {name: McuType.from_json(name, body) for name, body in raw.items()}
-        return cls(types, raw)
+            with open(path, encoding="utf-8") as fh:
+                doc = CfgDocument(fh.read())
+        except OSError as exc:
+            raise ConfigCorruptError(f"could not read {path}: {exc}", path=path) from exc
+
+        types: dict[str, McuType] = {}
+        for section in doc.section_names(SECTION_PREFIX):
+            name = section[len(SECTION_PREFIX) :].strip()
+            if not name:
+                continue
+            mcu = McuType(name=name, chipset=(doc.get(section, "chipset") or "").strip())
+            mcu.serials = doc.get_list(section, "serials")
+            for fw in FW_TARGETS:
+                cfg = mcu.fw(fw)
+                cfg.extra_args = (doc.get(section, f"{fw}_extra_args") or "").strip()
+                for raw in doc.get_list(section, f"{fw}_makefile_patches"):
+                    patch = MakefilePatch.parse(raw)
+                    if patch is None:
+                        raise ConfigCorruptError(
+                            f"{path}: could not parse a makefile patch for '{name}': {raw!r}. "
+                            f"Expected '<file> {PATCH_SEPARATOR} <line>'.",
+                            path=path,
+                            type=name,
+                            value=raw,
+                        )
+                    cfg.makefile_patches.append(patch)
+            installed = doc.get(section, "katapult_installed")
+            if installed is not None:
+                mcu.fw("katapult").installed = _parse_bool(installed, True)
+            types[name] = mcu
+
+        return cls(types, doc)
+
+    @staticmethod
+    def _refuse_if_legacy(paths: Paths) -> None:
+        """A pre-0.10 install has its registry somewhere we no longer look.
+
+        Silently reporting "no MCU types configured" would be a data-loss shaped
+        surprise: the next add-type would write a fresh file while the real one
+        sat untouched in the old location.
+        """
+        legacy = paths.legacy_registry_file
+        if not os.path.exists(legacy):
+            return
+        raise ConfigError(
+            f"found a registry at the old location {legacy}, but nothing at "
+            f"{paths.registry_file}.\n"
+            f"The layout moved: hand-edited config now lives under "
+            f"{paths.config_dir} and build artifacts under {paths.data_dir}.\n"
+            f"Convert the old file (see docs/layout.md) or move your .config "
+            f"files across and re-add the types - then delete {legacy}.\n"
+            f"Refusing to continue so an empty registry can't overwrite anything.",
+            legacy=legacy,
+            expected=paths.registry_file,
+        )
 
     def save(self, paths: Paths) -> None:
-        """Atomic write, matching the original's tmp+replace and indent=4."""
-        out = dict(self._raw)
-        for name in list(out):
-            if name not in self.types:
-                del out[name]
-        for name, mcu in self.types.items():
-            out[name] = mcu.to_json()
+        """Atomic write, preserving everything the document already had."""
+        doc = self._doc
 
-        os.makedirs(os.path.dirname(paths.mcus_json), exist_ok=True)
-        tmp = paths.mcus_json + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(out, fh, indent=4)
-        os.replace(tmp, paths.mcus_json)
-        self._raw = out
+        for section in doc.section_names(SECTION_PREFIX):
+            name = section[len(SECTION_PREFIX) :].strip()
+            if name not in self.types:
+                doc.remove_section(section)
+
+        for name, mcu in self.types.items():
+            section = section_name(name)
+            doc.set(section, "chipset", mcu.chipset)
+            doc.set(section, "serials", list(mcu.serials))
+
+            # Only written when it differs from the default, to keep the file
+            # readable rather than full of restated defaults.
+            if mcu.fw("katapult").installed is False:
+                doc.set(section, "katapult_installed", "false")
+            else:
+                doc.remove_option(section, "katapult_installed")
+
+            for fw in FW_TARGETS:
+                cfg = mcu.fws.get(fw)
+                args_key = f"{fw}_extra_args"
+                patch_key = f"{fw}_makefile_patches"
+                if cfg is not None and cfg.extra_args.strip():
+                    doc.set(section, args_key, cfg.extra_args.strip())
+                else:
+                    doc.remove_option(section, args_key)
+
+                valid = [p for p in (cfg.makefile_patches if cfg else []) if p.is_valid()]
+                if valid:
+                    doc.set(section, patch_key, [p.render() for p in valid])
+                else:
+                    doc.remove_option(section, patch_key)
+
+        os.makedirs(os.path.dirname(paths.registry_file), exist_ok=True)
+        tmp = paths.registry_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(doc.render())
+        os.replace(tmp, paths.registry_file)
 
     # --- lookups ---
 
@@ -256,11 +289,10 @@ class Registry:
         """Work out which type a serial belongs to.
 
         With an explicit `mcu_type`, verifies the pairing. Raises
-        SerialTrackedElsewhereError if the serial belongs to a *different* type
-        - that is a much stronger signal of "wrong -t" than "this is a new
-        device", so it is refused outright rather than offered as an add.
-        Raises UnknownSerialError if it is simply untracked; the caller decides
-        whether to offer adding it.
+        SerialTrackedElsewhereError if the serial belongs to a *different* type -
+        that is a much stronger signal of a wrong selection than "this is a new
+        device", so it is refused outright. Raises UnknownSerialError if it is
+        simply untracked; the caller decides whether to offer adding it.
         """
         if mcu_type is not None:
             mcu = self.get(mcu_type)
@@ -308,15 +340,16 @@ class Registry:
         overwrite: bool = False,
     ) -> McuType:
         if name in self.types and not overwrite:
-            raise DuplicateTypeError(
-                f"MCU type '{name}' already exists.", type=name
-            )
+            raise DuplicateTypeError(f"MCU type '{name}' already exists.", type=name)
         mcu = McuType(
             name=name,
             chipset=chipset,
             serials=[],
             fws={
-                "katapult": FwConfig(extra_args=katapult_args, installed=katapult_installed),
+                "katapult": FwConfig(
+                    extra_args=katapult_args,
+                    installed=None if katapult_installed else False,
+                ),
                 "klipper": FwConfig(extra_args=klipper_args),
             },
         )

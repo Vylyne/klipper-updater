@@ -43,45 +43,43 @@ confirmation prompts; `--force` where a prompt guards something destructive.
 
 ## Configuration
 
-### `~/mcus/mcus.json`
+### `~/printer_data/config/klipper-updater/mcus.cfg`
 
-The registry. Hand-editable — this tool preserves your key order and any keys it
-doesn't recognise when it writes the file back.
+The registry. Klipper-style, because it sits next to `printer.cfg` and gets
+hand-edited — and **your comments survive** the panel writing to it.
 
-```json
-{
-  "flylllplusbuffer": {
-    "chipset": "stm32f072xb",
-    "katapult": { "installed": true, "extra_args": "" },
-    "klipper": {
-      "makefile_patches": [
-        { "file": "src/Makefile", "line": "src-y += buffer.c" }
-      ],
-      "extra_args": ""
-    },
-    "serials": ["4C0033000957465331323720-if00"]
-  }
-}
+```ini
+# Toolhead boards. The buffer patch is specific to this batch.
+[mcu flylllplusbuffer]
+chipset: stm32f072xb
+serials:
+    4C0033000957465331323720-if00
+    3F0037000957465331323720-if00
+klipper_makefile_patches:
+    src/Makefile -> src-y += buffer.c
 ```
 
-Three per-firmware keys:
+Per-type keys:
 
-- **`extra_args`** — appended to the `make` command line.
-- **`installed`** — Katapult only; set `false` for a board with no bootloader.
-- **`makefile_patches`** — lines appended to a source-tree Makefile *for the
-  duration of one build only*, then reverted. This exists because Klipper's build
-  system has no way to add `src-y +=` lines from the command line, and a
-  permanent edit would leak into every other type sharing that chipset and
-  conflict on the next `git pull` of Klipper.
+- **`chipset`** — required; matches the chipset segment of the by-id name.
+- **`serials`** — one tracked board per line.
+- **`katapult_installed`** — only written when `false`; a board with no
+  bootloader is the exception.
+- **`<fw>_extra_args`** — appended to the `make` command line.
+- **`<fw>_makefile_patches`** — `<file> -> <line>`, appended to that Makefile
+  *for one build only*, then reverted. This exists because Klipper's build system
+  has no way to add `src-y +=` lines from the command line, and a permanent edit
+  would leak into every other type sharing that chipset and conflict on the next
+  `git pull` of Klipper.
 
-`mcus.json` at the repo root is a real example copied from a working printer.
+`mcus.cfg` at the repo root is a real example copied from a working printer.
 
 > **`makefile_patches` makes your firmware version say `-dirty`.** Klipper stamps
 > the version from git while the patch is applied, so the tree is briefly dirty.
 > `v0.13.0-712-g6d43f8b3-dirty-...` is expected for a patched type and does not
 > mean you have local Klipper modifications.
 
-### `~/mcus/updater.conf`
+### `~/printer_data/config/klipper-updater/updater.conf`
 
 Optional; every value has a default.
 
@@ -95,14 +93,26 @@ dry_run = false
 
 ## Layout
 
+Files are split by what they are — see [docs/layout.md](docs/layout.md) for the
+reasoning.
+
 ```
-~/klipper-updater/src/updatefw.py   entry point (a shim onto the package)
-~/klipper-updater/src/klipper_updater/
-~/mcus/mcus.json                    the registry
-~/mcus/<type>/<fw>.config           saved menuconfig answers
-~/mcus/<type>/<fw>.bin              staged firmware
-~/mcus/<type>/<fw>.build.json       build provenance, for staleness checks
+~/klipper-updater/src/updatefw.py        entry point (a shim onto the package)
+
+~/printer_data/config/klipper-updater/   hand-edited, backed up, editable in Mainsail
+    mcus.cfg                             the registry
+    updater.conf                         tool settings
+    <type>/<fw>.config                   saved menuconfig answers
+
+~/printer_data/klipper-updater/          generated, not backed up
+    <type>/<fw>.bin                      built firmware
+    <type>/<fw>.build.json               build provenance, for staleness checks
 ```
+
+Config lives under `config/` so it's backed up and reachable by Mainsail's own
+editor. Firmware binaries deliberately don't: backup tools git-commit everything
+in that directory, so a `.bin` there means a binary churn commit after every
+build — and they're regenerable anyway.
 
 Staleness compares recorded provenance — the source-tree commit and a hash of
 the `.config` used — rather than file timestamps. So `status` correctly reports
@@ -122,9 +132,10 @@ filesystem location comes from a `Paths` object that honours these overrides:
 | Variable | Replaces |
 | --- | --- |
 | `KLIPPER_UPDATER_HOME` | `~` |
-| `KLIPPER_UPDATER_SETTINGS` | `~/mcus` |
-| `KLIPPER_UPDATER_FAKE_BUS` | `/dev/serial/by-id` |
 | `KLIPPER_UPDATER_PRINTER_DATA` | `~/printer_data` |
+| `KLIPPER_UPDATER_CONFIG_DIR` | `…/config/klipper-updater` |
+| `KLIPPER_UPDATER_DATA_DIR` | `…/klipper-updater` |
+| `KLIPPER_UPDATER_FAKE_BUS` | `/dev/serial/by-id` |
 
 `KLIPPER_UPDATER_FAKE_BUS` is worth knowing about: `touch` and `rm` files named
 `usb-<fw>_<chipset>_<serial>` in that directory to simulate a board

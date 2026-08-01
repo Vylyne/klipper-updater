@@ -189,7 +189,8 @@ class Api:
             "host": {
                 "nproc": os.cpu_count(),
                 "python": platform.python_version(),
-                "settings_dir": self.paths.settings_dir,
+                "config_dir": self.paths.config_dir,
+                "data_dir": self.paths.data_dir,
             },
             "now": time.time(),
         }

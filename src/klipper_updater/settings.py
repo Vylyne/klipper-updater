@@ -1,6 +1,6 @@
-"""Tool settings, at ``~/mcus/updater.conf``.
+"""Tool settings, at ``~/printer_data/config/klipper-updater/updater.conf``.
 
-Deliberately a separate file from ``mcus.json``: that file is a flat
+Deliberately a separate file from ``mcus.cfg``: that file is a
 type-keyed map the user hand-edits, so a ``_settings`` key in it would be both
 ugly and liable to collide with a board called "settings". INI format to match
 the surrounding klipper/moonraker ecosystem.

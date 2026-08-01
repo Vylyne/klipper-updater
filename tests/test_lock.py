@@ -56,7 +56,7 @@ def test_holder_of_a_missing_file_is_none(paths):
 
 
 def test_holder_of_a_corrupt_file_is_none(paths):
-    os.makedirs(paths.settings_dir, exist_ok=True)
+    os.makedirs(paths.data_dir, exist_ok=True)
     with open(paths.lock_file, "w", encoding="utf-8") as fh:
         fh.write("not json at all")
     assert ExclusiveLock(paths).holder() is None
@@ -137,8 +137,9 @@ def test_the_lock_is_released_when_the_holder_dies(paths, tmp_path):
         assert lock.holder()["label"] == "next build"
 
 
-def test_lock_file_lives_in_the_settings_dir(paths):
-    assert paths.lock_file.endswith(os.path.join("mcus", ".updater.lock"))
+def test_lock_file_lives_with_the_runtime_state(paths):
+    assert paths.lock_file.endswith(os.path.join("klipper-updater", ".updater.lock"))
+    assert paths.lock_file.startswith(paths.data_dir), "state does not belong in config/"
     with exclusive(paths, "x"):
         assert os.path.exists(paths.lock_file)
         data = json.load(open(paths.lock_file, encoding="utf-8"))
@@ -150,7 +151,7 @@ def test_the_busy_message_names_the_incumbent_and_its_age(paths):
     'resource busy' with no explanation is a bad experience on any platform."""
     import time as _time
 
-    os.makedirs(paths.settings_dir, exist_ok=True)
+    os.makedirs(paths.data_dir, exist_ok=True)
     with open(paths.lock_file, "w", encoding="utf-8") as fh:
         json.dump({"pid": 4242, "label": "update-all", "since": _time.time() - 90}, fh)
 

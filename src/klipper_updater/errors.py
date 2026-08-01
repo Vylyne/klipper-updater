@@ -37,11 +37,11 @@ class ConfigError(UpdaterError):
 
 
 class ConfigCorruptError(ConfigError):
-    """mcus.json exists but does not parse.
+    """The registry exists but cannot be interpreted.
 
-    Raised rather than silently returning {} - a stray comma in a 10-board
-    registry otherwise looks exactly like "no MCU types configured", and the
-    next add-type would happily write a fresh file over the top of it.
+    Raised rather than silently returning an empty registry: "no MCU types
+    configured" looks identical to a healthy fresh install, and the next
+    add-type would happily write a fresh file over the top of the real one.
     """
 
     code = "config_corrupt"

@@ -8,7 +8,8 @@ KLIPPER_PATH="${KLIPPER_PATH:-${HOME}/klipper}"
 KATAPULT_PATH="${KATAPULT_PATH:-${HOME}/katapult}"
 PRINTER_DATA="${PRINTER_DATA:-${HOME}/printer_data}"
 INSTALL_PATH="${INSTALL_PATH:-${HOME}/klipper-updater}"
-SETTINGS_PATH="${SETTINGS_PATH:-${HOME}/mcus}"
+CONFIG_PATH="${CONFIG_PATH:-${PRINTER_DATA}/config/klipper-updater}"
+DATA_PATH="${DATA_PATH:-${PRINTER_DATA}/klipper-updater}"
 # Must match the [update_manager <name>] section in
 # scripts/moonraker-update-manager.conf. Moonraker only permits a
 # `managed_services` value equal to the section name, `klipper`, or `moonraker`,
@@ -67,12 +68,23 @@ function check_paths {
 }
 
 function check_config {
-    # load_data used to swallow a JSON error and read as "no MCU types
-    # configured", which meant the next add-type could overwrite the whole
-    # registry. It now refuses - so surface a broken file here, loudly, before
-    # the agent starts and reports it as an error to the UI.
-    if [ ! -f "${SETTINGS_PATH}/mcus.json" ]; then
-        printf "[CONFIG] No registry at %s/mcus.json yet - nothing to validate.\n\n" "${SETTINGS_PATH}"
+    mkdir -p "${CONFIG_PATH}" "${DATA_PATH}"
+
+    # A registry left at the pre-0.10 location would otherwise read as "no MCU
+    # types configured", and the next add-type would write a fresh file while the
+    # real one sat untouched. Refuse loudly instead.
+    if [ -f "${HOME}/mcus/mcus.json" ] && [ ! -f "${CONFIG_PATH}/mcus.cfg" ]; then
+        echo "[ERROR] Found an old registry at ${HOME}/mcus/mcus.json but nothing at"
+        echo "        ${CONFIG_PATH}/mcus.cfg."
+        echo "        The layout moved - see docs/layout.md for the handful of commands."
+        echo "        Refusing to continue so an empty registry cannot overwrite anything."
+        exit 1
+    fi
+
+    # A broken registry is surfaced here, loudly, rather than by the agent
+    # reporting it as an error to the UI after the fact.
+    if [ ! -f "${CONFIG_PATH}/mcus.cfg" ]; then
+        printf "[CONFIG] No registry at %s/mcus.cfg yet - nothing to validate.\n\n" "${CONFIG_PATH}"
         return 0
     fi
     if PYTHONPATH="${INSTALL_PATH}/src" "${PYTHON_BIN}" -c '
@@ -84,7 +96,7 @@ print(f"[CONFIG] {len(reg)} MCU type(s), {len(reg.all_serials())} tracked serial
 '; then
         printf "\n"
     else
-        echo "[ERROR] ${SETTINGS_PATH}/mcus.json could not be read. Fix or restore it, then re-run."
+        echo "[ERROR] ${CONFIG_PATH}/mcus.cfg could not be read. Fix or restore it, then re-run."
         exit 1
     fi
 }
@@ -256,8 +268,11 @@ function print_next_steps {
    [update_manager mainsail]
    repo: Vylyne/mainsail        # was mainsail-crew/mainsail
 
+ Config:    ${CONFIG_PATH}      (backed up, editable in Mainsail)
+ Artifacts: ${DATA_PATH}        (generated, not backed up)
+
  Flashing from the web UI is OFF by default. To enable it, add to
- ${SETTINGS_PATH}/updater.conf:
+ ${CONFIG_PATH}/updater.conf:
 
    [updater]
    enable_flashing = true

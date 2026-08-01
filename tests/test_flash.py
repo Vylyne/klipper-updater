@@ -31,14 +31,19 @@ def ready(paths, settings, fake_root):
     settings.dry_run = True
     (fake_root / "katapult" / "scripts").mkdir(parents=True, exist_ok=True)
     (fake_root / "katapult" / "scripts" / "flashtool.py").write_text("", encoding="utf-8")
-    (fake_root / "mcus" / "board").mkdir(parents=True, exist_ok=True)
-    (fake_root / "mcus" / "board" / "klipper.bin").write_bytes(b"\0" * 16)
+    _stage_bin(paths)
     return settings
 
 
+def _stage_bin(paths, mcu_type: str = "board") -> None:
+    """Built firmware lives in the data tree, not beside the saved config."""
+    os.makedirs(paths.artifact_dir(mcu_type), exist_ok=True)
+    with open(paths.bin_file(mcu_type, "klipper"), "wb") as fh:
+        fh.write(b"\0" * 16)
+
+
 def test_missing_flashtool_raises(paths, settings, fake_root):
-    (fake_root / "mcus" / "board").mkdir(parents=True)
-    (fake_root / "mcus" / "board" / "klipper.bin").write_bytes(b"\0")
+    _stage_bin(paths)
     with pytest.raises(ToolMissingError) as exc:
         flash_katapult(paths, settings, "board", "chipA", "S1")
     assert exc.value.data["tool"] == "flashtool.py"

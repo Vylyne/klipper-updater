@@ -31,7 +31,7 @@ def _write_settings(paths, **extra) -> None:
 
 
 def _stage_artifact(paths, mcu_type=TRACKED_TYPE) -> str:
-    os.makedirs(paths.type_dir(mcu_type), exist_ok=True)
+    os.makedirs(paths.artifact_dir(mcu_type), exist_ok=True)
     path = paths.bin_file(mcu_type, "klipper")
     with open(path, "wb") as fh:
         fh.write(b"\0" * 1024)
@@ -63,7 +63,7 @@ def _moonraker(print_state="standby", idle_state="Ready", klippy="ready"):
 @pytest.fixture
 def flashable(paths, live_registry_text, fake_root):
     """Everything in place for a successful flash, with flashing enabled."""
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     _write_settings(paths, enable_flashing="true")
     _stage_artifact(paths)
@@ -92,7 +92,7 @@ def flashable(paths, live_registry_text, fake_root):
 def test_flashing_is_not_advertised_by_default(paths, live_registry_text):
     """Installing an update must never silently grant a browser the ability to
     reflash the printer."""
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     _write_settings(paths)  # enable_flashing omitted -> false
     api = Api(paths, runner=JobRunner(paths, lambda: __import__(
@@ -113,7 +113,7 @@ def test_flashing_is_advertised_once_enabled(flashable):
 def test_the_gate_is_reported_by_code_when_called_directly(paths, live_registry_text):
     """dispatch hides the method, so this guard is only reachable directly - but it
     must still explain itself rather than raising something opaque."""
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     _write_settings(paths)
     api = Api(paths, runner=JobRunner(paths, lambda: __import__(
@@ -308,7 +308,7 @@ def test_agent_startup_reconciles_a_crashed_flash(paths, live_registry_text):
     agent brings klipper back up."""
     from klipper_updater.agent.service import Agent
 
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     _write_settings(paths)
     Journal(paths).record_stop("klipper", "flash 2900550018 (killed)")
@@ -325,7 +325,7 @@ def test_shutdown_defers_while_a_flash_is_running(paths, live_registry_text):
 
     from klipper_updater.agent.service import Agent
 
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     _write_settings(paths)
 
@@ -350,7 +350,7 @@ def test_shutdown_does_not_defer_for_a_build(paths, live_registry_text):
 
     from klipper_updater.agent.service import Agent
 
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     _write_settings(paths)
 

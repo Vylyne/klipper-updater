@@ -18,7 +18,7 @@ from .conftest import make_device
 
 @pytest.fixture
 def api(paths, live_registry_text):
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     return Api(paths)
 
@@ -247,8 +247,11 @@ def test_a_non_object_params_is_rejected(api):
 
 
 def test_a_corrupt_registry_surfaces_as_a_typed_error(api, paths):
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
-        fh.write("{invalid")
+    """A .cfg tolerates most junk by ignoring it, so the corrupt case that
+    actually matters is a value we cannot interpret - here a makefile patch
+    missing its separator, which would otherwise silently drop a source file."""
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write("[mcu a]\nchipset: x\nklipper_makefile_patches:\n    nonsense\n")
     with pytest.raises(RpcError) as exc:
         api.dispatch("fw.status")
     assert exc.value.data["code"] == "config_corrupt"
@@ -268,7 +271,7 @@ def test_status_works_with_no_moonraker_connection(api):
 
 
 def test_a_failing_probe_does_not_break_status(paths, live_registry_text):
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
 
     def broken(method, params, timeout):
@@ -281,7 +284,7 @@ def test_a_failing_probe_does_not_break_status(paths, live_registry_text):
 
 
 def test_service_state_and_print_state_are_parsed(paths, live_registry_text):
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
 
     def fake(method, params, timeout):
@@ -297,7 +300,7 @@ def test_service_state_and_print_state_are_parsed(paths, live_registry_text):
 
 
 def test_an_unexpected_moonraker_shape_is_reported_as_unknown(paths, live_registry_text):
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     res = Api(paths, call=lambda m, p, t: {"unexpected": True}).dispatch("fw.status")
     assert res["klipper_service"] is None

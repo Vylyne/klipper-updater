@@ -465,7 +465,7 @@ def build(
     jobs: Optional[int] = None,
     clean: Optional[bool] = None,
 ) -> BuildResult:
-    """Compile one type/firmware pair and stage the artifacts under ~/mcus.
+    """Compile one type/firmware pair and stage the artifacts.
 
     Raises rather than returning None (the original returned None so update_all
     could continue; that decision now belongs to the caller, which is what makes
@@ -545,7 +545,9 @@ def build(
             "because src/Kconfig changed in a git pull). Review your settings.",
         )
 
-    os.makedirs(paths.type_dir(mcu_type), exist_ok=True)
+    # Artifacts live outside the config tree, so this is a different directory
+    # from the one holding the saved .config.
+    os.makedirs(paths.artifact_dir(mcu_type), exist_ok=True)
     bin_out = paths.bin_file(mcu_type, fw)
     compiled = paths.built_artifact(fw, "bin")
 

@@ -94,7 +94,9 @@ application error (see `data.code`), `-32603` internal.
 ```json
 {"api_version": 1, "version": "0.9.0", "dry_run": false, "enable_flashing": false,
  "phase": 1, "capabilities": ["fw.artifacts", "fw.bus.scan", "..."],
- "host": {"nproc": 4, "python": "3.9.2", "settings_dir": "/home/biqu/mcus"},
+ "host": {"nproc": 4, "python": "3.9.2",
+          "config_dir": "/home/biqu/printer_data/config/klipper-updater",
+          "data_dir": "/home/biqu/printer_data/klipper-updater"},
  "now": 1785412345.6}
 ```
 
@@ -226,7 +228,7 @@ Flashing stops Klipper and writes to a board. It is therefore **not advertised
 unless it is explicitly switched on**:
 
 ```ini
-# ~/mcus/updater.conf
+# ~/printer_data/config/klipper-updater/updater.conf
 [updater]
 enable_flashing = true
 ```
@@ -299,7 +301,7 @@ dead until a human notices:
 1. the `finally` in `klipper_stopped()`;
 2. `MoonrakerService.start()` falling through to `sudo systemctl start klipper`
    if Moonraker itself has gone away;
-3. a journal at `~/mcus/.updater.state`, written before the stop and cleared
+3. a journal at `~/printer_data/klipper-updater/.updater.state`, written before the stop and cleared
    after the start, which the agent reconciles on startup — this is what covers
    `kill -9`, where no `finally` ever runs;
 4. `ExecStopPost` on the systemd unit.

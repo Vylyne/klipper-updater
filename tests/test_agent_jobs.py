@@ -149,7 +149,7 @@ def test_the_timer_flushes_without_help(batcher):
 
 @pytest.fixture
 def api(paths, settings, live_registry_text):
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     settings.dry_run = True
     runner = JobRunner(paths, lambda: settings)
@@ -313,7 +313,7 @@ def test_status_surfaces_the_running_job_and_then_history(api, paths):
 
 
 def test_job_methods_are_absent_without_a_runner(paths, live_registry_text):
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
     readonly = Api(paths)
     for method in ("fw.build", "fw.job.get", "fw.job.cancel"):

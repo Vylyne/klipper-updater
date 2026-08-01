@@ -101,7 +101,7 @@ class FakeMoonraker:
 @pytest.fixture
 def wired(paths, live_registry_text):
     """An Agent whose peer talks to a FakeMoonraker over a socketpair."""
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
 
     agent_sock, server_sock = socket.socketpair()
@@ -276,7 +276,7 @@ def test_run_forever_survives_a_missing_socket(paths):
 
 def test_registration_repeats_on_every_reconnect(paths, live_registry_text):
     """Moonraker drops remote-method registrations when the connection closes."""
-    with open(paths.mcus_json, "w", encoding="utf-8") as fh:
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
 
     servers: list[FakeMoonraker] = []
