@@ -138,7 +138,7 @@ def test_the_lock_is_released_when_the_holder_dies(paths, tmp_path):
 
 
 def test_lock_file_lives_with_the_runtime_state(paths):
-    assert paths.lock_file.endswith(os.path.join("klipper-updater", ".updater.lock"))
+    assert paths.lock_file.endswith(os.path.join("mcu-updater", ".updater.lock"))
     assert paths.lock_file.startswith(paths.data_dir), "state does not belong in config/"
     with exclusive(paths, "x"):
         assert os.path.exists(paths.lock_file)

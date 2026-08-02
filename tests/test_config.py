@@ -315,3 +315,16 @@ def test_the_file_stays_valid_klipper_style_cfg(paths, live_registry_text):
     doc = CfgDocument(live_registry_text)
     assert doc.section_names("mcu")
     assert doc.get("mcu sv08Mainboard", "chipset") == "stm32f103xe"
+
+
+def test_the_intermediate_config_dir_is_also_guarded(paths, fake_root):
+    """The config directory was renamed with the project. Someone who pulled in
+    between would otherwise have their registry silently ignored."""
+    old = fake_root / "printer_data" / "config" / "klipper-updater"
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "mcus.cfg").write_text("[mcu a]\nchipset: x\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as exc:
+        Registry.load(paths)
+    assert "klipper-updater" in str(exc.value)
+    assert "mcu-updater" in str(exc.value)

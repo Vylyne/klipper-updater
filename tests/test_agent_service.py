@@ -148,7 +148,7 @@ def test_identify_sends_exactly_the_four_required_fields(wired):
         "client_name": AGENT_NAME,
         "version": __version__,
         "type": "agent",
-        "url": "https://github.com/Vylyne/klipper-updater",
+        "url": "https://github.com/Vylyne/mcu-updater",
     }
 
 

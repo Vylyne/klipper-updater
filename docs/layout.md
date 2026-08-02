@@ -3,13 +3,13 @@
 Files are split by *what they are*, following the `printer_data` conventions.
 
 ```
-~/printer_data/config/klipper-updater/     # hand-edited. backed up. editable in Mainsail.
+~/printer_data/config/mcu-updater/     # hand-edited. backed up. editable in Mainsail.
     mcus.cfg                               #   the MCU registry
     updater.conf                           #   tool settings
     bttebb36/klipper.config                #   saved menuconfig answers, per type
     flylllplusbuffer/klipper.config
 
-~/printer_data/klipper-updater/            # generated. not backed up.
+~/printer_data/mcu-updater/            # generated. not backed up.
     bttebb36/klipper.bin                   #   built firmware
     bttebb36/klipper.build.json            #   build provenance, for staleness
     flylllplusbuffer/klipper.uf2
@@ -33,7 +33,7 @@ from source plus the saved config, and Mainsail's editor would list files it
 can't open. The same reasoning puts the lock and journal in the data tree —
 they're runtime state, not configuration.
 
-`~/printer_data/klipper-updater/` follows the pattern other add-ons use, e.g.
+`~/printer_data/mcu-updater/` follows the pattern other add-ons use, e.g.
 `moonraker-timelapse` writing to `~/printer_data/timelapse/`.
 
 ## The registry: `mcus.cfg`
@@ -101,8 +101,8 @@ Every path derives from one `Paths` object, so nothing is hardcoded elsewhere:
 | --- | --- |
 | `KLIPPER_UPDATER_HOME` | `~` |
 | `KLIPPER_UPDATER_PRINTER_DATA` | `~/printer_data` |
-| `KLIPPER_UPDATER_CONFIG_DIR` | `…/config/klipper-updater` |
-| `KLIPPER_UPDATER_DATA_DIR` | `…/klipper-updater` |
+| `KLIPPER_UPDATER_CONFIG_DIR` | `…/config/mcu-updater` |
+| `KLIPPER_UPDATER_DATA_DIR` | `…/mcu-updater` |
 | `KLIPPER_UPDATER_FAKE_BUS` | `/dev/serial/by-id` |
 
 ## Coming from the old layout
@@ -117,8 +117,8 @@ untouched.
 To move across by hand:
 
 ```bash
-NEW=~/printer_data/config/klipper-updater
-mkdir -p "$NEW" ~/printer_data/klipper-updater
+NEW=~/printer_data/config/mcu-updater
+mkdir -p "$NEW" ~/printer_data/mcu-updater
 
 # saved menuconfig answers - the part worth keeping
 cp -r ~/mcus/*/                "$NEW"/

@@ -1,4 +1,4 @@
-# Installed to /etc/sudoers.d/klipper-updater (mode 0440) by install.sh, only if
+# Installed to /etc/sudoers.d/mcu-updater (mode 0440) by install.sh, only if
 # you accept the prompt. %USER% is substituted there.
 #
 # Not needed for the normal path: the agent stops and starts klipper through

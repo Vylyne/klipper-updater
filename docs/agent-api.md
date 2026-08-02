@@ -1,6 +1,6 @@
 # Agent API
 
-The contract between `klipper-updater` (Python) and the Mainsail panel
+The contract between `mcu-updater` (Python) and the Mainsail panel
 (TypeScript). Both sides are hand-written, so **this file is the single source of
 truth** — and `tests/test_agent_methods.py` is what stops them drifting.
 
@@ -21,7 +21,7 @@ The agent connects to `~/printer_data/comms/moonraker.sock` and identifies itsel
 ```json
 {"jsonrpc": "2.0", "id": 1, "method": "server.connection.identify",
  "params": {"client_name": "klipper_updater", "version": "0.9.0",
-            "type": "agent", "url": "https://github.com/Vylyne/klipper-updater"}}
+            "type": "agent", "url": "https://github.com/Vylyne/mcu-updater"}}
 ```
 
 All four params are required. No `api_key`/`access_token` — unix socket
@@ -95,8 +95,8 @@ application error (see `data.code`), `-32603` internal.
 {"api_version": 1, "version": "0.9.0", "dry_run": false, "enable_flashing": false,
  "phase": 1, "capabilities": ["fw.artifacts", "fw.bus.scan", "..."],
  "host": {"nproc": 4, "python": "3.9.2",
-          "config_dir": "/home/biqu/printer_data/config/klipper-updater",
-          "data_dir": "/home/biqu/printer_data/klipper-updater"},
+          "config_dir": "/home/biqu/printer_data/config/mcu-updater",
+          "data_dir": "/home/biqu/printer_data/mcu-updater"},
  "now": 1785412345.6}
 ```
 
@@ -228,7 +228,7 @@ Flashing stops Klipper and writes to a board. It is therefore **not advertised
 unless it is explicitly switched on**:
 
 ```ini
-# ~/printer_data/config/klipper-updater/updater.conf
+# ~/printer_data/config/mcu-updater/updater.conf
 [updater]
 enable_flashing = true
 ```
@@ -301,7 +301,7 @@ dead until a human notices:
 1. the `finally` in `klipper_stopped()`;
 2. `MoonrakerService.start()` falling through to `sudo systemctl start klipper`
    if Moonraker itself has gone away;
-3. a journal at `~/printer_data/klipper-updater/.updater.state`, written before the stop and cleared
+3. a journal at `~/printer_data/mcu-updater/.updater.state`, written before the stop and cleared
    after the start, which the agent reconciles on startup — this is what covers
    `kill -9`, where no `finally` ever runs;
 4. `ExecStopPost` on the systemd unit.

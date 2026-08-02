@@ -28,7 +28,7 @@ from .events import BusWatcher, EventEmitter, LogBatcher
 from .methods import Api
 from .rpc import MoonrakerPeer, RpcError
 
-PROJECT_URL = "https://github.com/Vylyne/klipper-updater"
+PROJECT_URL = "https://github.com/Vylyne/mcu-updater"
 
 #: Reconnect backoff, in seconds. Caps rather than growing forever - if
 #: Moonraker is down for an hour we still want to be back within 30s of it
@@ -123,7 +123,7 @@ class Agent:
     def request_stop(self, timeout: float = 300.0) -> None:
         """Shut down, but never in the middle of a write.
 
-        `systemctl restart klipper-updater` during a flash would otherwise kill
+        `systemctl restart mcu-updater` during a flash would otherwise kill
         flashtool part-way and leave a board with half an image. A build is safe
         to interrupt, so only the non-interruptible kinds defer. The unit's
         TimeoutStopSec must exceed this.

@@ -3,7 +3,7 @@
 
 The implementation moved into the ``klipper_updater`` package next to this file.
 This shim stays so that muscle memory, cron entries, and anything invoking
-``~/klipper-updater/src/updatefw.py`` keep working unchanged.
+``~/mcu-updater/src/updatefw.py`` keep working unchanged.
 """
 
 import os

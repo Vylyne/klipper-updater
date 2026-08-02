@@ -1,4 +1,4 @@
-"""Tool settings, at ``~/printer_data/config/klipper-updater/updater.conf``.
+"""Tool settings, at ``~/printer_data/config/mcu-updater/updater.conf``.
 
 Deliberately a separate file from ``mcus.cfg``: that file is a
 type-keyed map the user hand-edits, so a ``_settings`` key in it would be both

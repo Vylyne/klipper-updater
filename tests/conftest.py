@@ -40,8 +40,8 @@ def fake_root(tmp_path: pathlib.Path) -> pathlib.Path:
     (tmp_path / "katapult" / "src").mkdir(parents=True)
     (tmp_path / "printer_data" / "comms").mkdir(parents=True)
     # Hand-edited config, and build artifacts, deliberately in separate trees.
-    (tmp_path / "printer_data" / "config" / "klipper-updater").mkdir(parents=True)
-    (tmp_path / "printer_data" / "klipper-updater").mkdir(parents=True)
+    (tmp_path / "printer_data" / "config" / "mcu-updater").mkdir(parents=True)
+    (tmp_path / "printer_data" / "mcu-updater").mkdir(parents=True)
     return tmp_path
 
 

@@ -1,4 +1,4 @@
-# klipper-updater
+# mcu-updater
 
 Firmware management for a Klipper printer with more than one MCU. It keeps a
 registry of your board types and the USB serials of the physical boards of each
@@ -21,8 +21,8 @@ standard library only — no pip dependencies, no virtualenv.
 ## Usage
 
 ```bash
-~/klipper-updater/src/updatefw.py            # interactive menu
-~/klipper-updater/src/updatefw.py status     # what's tracked, built, and online
+~/mcu-updater/src/updatefw.py            # interactive menu
+~/mcu-updater/src/updatefw.py status     # what's tracked, built, and online
 ```
 
 | Command | What it does |
@@ -43,7 +43,7 @@ confirmation prompts; `--force` where a prompt guards something destructive.
 
 ## Configuration
 
-### `~/printer_data/config/klipper-updater/mcus.cfg`
+### `~/printer_data/config/mcu-updater/mcus.cfg`
 
 The registry. Klipper-style, because it sits next to `printer.cfg` and gets
 hand-edited — and **your comments survive** the panel writing to it.
@@ -79,7 +79,7 @@ Per-type keys:
 > `v0.13.0-712-g6d43f8b3-dirty-...` is expected for a patched type and does not
 > mean you have local Klipper modifications.
 
-### `~/printer_data/config/klipper-updater/updater.conf`
+### `~/printer_data/config/mcu-updater/updater.conf`
 
 Optional; every value has a default.
 
@@ -97,14 +97,14 @@ Files are split by what they are — see [docs/layout.md](docs/layout.md) for th
 reasoning.
 
 ```
-~/klipper-updater/src/updatefw.py        entry point (a shim onto the package)
+~/mcu-updater/src/updatefw.py        entry point (a shim onto the package)
 
-~/printer_data/config/klipper-updater/   hand-edited, backed up, editable in Mainsail
+~/printer_data/config/mcu-updater/   hand-edited, backed up, editable in Mainsail
     mcus.cfg                             the registry
     updater.conf                         tool settings
     <type>/<fw>.config                   saved menuconfig answers
 
-~/printer_data/klipper-updater/          generated, not backed up
+~/printer_data/mcu-updater/          generated, not backed up
     <type>/<fw>.bin                      built firmware
     <type>/<fw>.build.json               build provenance, for staleness checks
 ```
@@ -133,8 +133,8 @@ filesystem location comes from a `Paths` object that honours these overrides:
 | --- | --- |
 | `KLIPPER_UPDATER_HOME` | `~` |
 | `KLIPPER_UPDATER_PRINTER_DATA` | `~/printer_data` |
-| `KLIPPER_UPDATER_CONFIG_DIR` | `…/config/klipper-updater` |
-| `KLIPPER_UPDATER_DATA_DIR` | `…/klipper-updater` |
+| `KLIPPER_UPDATER_CONFIG_DIR` | `…/config/mcu-updater` |
+| `KLIPPER_UPDATER_DATA_DIR` | `…/mcu-updater` |
 | `KLIPPER_UPDATER_FAKE_BUS` | `/dev/serial/by-id` |
 
 `KLIPPER_UPDATER_FAKE_BUS` is worth knowing about: `touch` and `rm` files named

@@ -11,8 +11,8 @@ def test_defaults_follow_the_printer_data_layout():
     """Hand-edited config under config/, build artifacts beside it - never in it."""
     p = Paths.from_env(env={"KLIPPER_UPDATER_HOME": os.path.join("/srv", "printer")})
     root = os.path.abspath(os.path.join("/srv", "printer", "printer_data"))
-    assert p.config_dir == os.path.join(root, "config", "klipper-updater")
-    assert p.data_dir == os.path.join(root, "klipper-updater")
+    assert p.config_dir == os.path.join(root, "config", "mcu-updater")
+    assert p.data_dir == os.path.join(root, "mcu-updater")
     assert p.registry_file == os.path.join(p.config_dir, "mcus.cfg")
     assert p.serial_by_id == DEFAULT_SERIAL_BY_ID
 
@@ -30,7 +30,7 @@ def test_artifacts_are_kept_out_of_the_backed_up_config_tree():
         p.journal_file,
     ):
         assert artifact.startswith(p.data_dir)
-        assert os.path.join("config", "klipper-updater") not in artifact
+        assert os.path.join("config", "mcu-updater") not in artifact
 
 
 def test_each_override_is_honoured_independently(tmp_path):
@@ -60,7 +60,7 @@ def test_an_explicit_home_beats_the_environment(tmp_path):
 
 def test_per_type_layout(tmp_path):
     p = Paths.from_env(env={"KLIPPER_UPDATER_HOME": str(tmp_path)})
-    assert p.type_dir("bttebb36").endswith(os.path.join("klipper-updater", "bttebb36"))
+    assert p.type_dir("bttebb36").endswith(os.path.join("mcu-updater", "bttebb36"))
     assert p.config_file("bttebb36", "klipper").endswith("klipper.config")
     assert p.bin_file("bttebb36", "klipper").endswith("klipper.bin")
     assert p.uf2_file("bttebb36", "katapult").endswith("katapult.uf2")

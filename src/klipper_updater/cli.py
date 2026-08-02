@@ -424,7 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Klipper/Katapult Firmware Management Utility"
     )
-    parser.add_argument("--version", action="version", version=f"klipper-updater {__version__}")
+    parser.add_argument("--version", action="version", version=f"mcu-updater {__version__}")
     parser.add_argument(
         "--dry-run",
         action="store_true",

@@ -15,7 +15,7 @@
 
 [Unit]
 Description=Klipper Updater Moonraker Agent
-Documentation=https://github.com/Vylyne/klipper-updater
+Documentation=https://github.com/Vylyne/mcu-updater
 # Wants, not Requires: a Moonraker restart must not take the agent down. It has
 # its own reconnect loop, and in later phases a build or flash may be in flight.
 After=moonraker.service

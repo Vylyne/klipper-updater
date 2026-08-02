@@ -41,12 +41,12 @@ class Paths:
 
     Split by *what the thing is*, following the printer_data conventions:
 
-    ``config_dir`` (``~/printer_data/config/klipper-updater``)
+    ``config_dir`` (``~/printer_data/config/mcu-updater``)
         Hand-edited, effectively irreplaceable, wants backing up - the registry
         and the saved menuconfig answers. Being under the config root means
         Moonraker serves it, so these are editable in Mainsail's own editor.
 
-    ``data_dir`` (``~/printer_data/klipper-updater``)
+    ``data_dir`` (``~/printer_data/mcu-updater``)
         Build artifacts and runtime state. Deliberately *not* in config/: .bin
         files are regenerable, and git-based backup tools commit everything under
         config/, so putting them there means a binary churn commit after every
@@ -70,9 +70,19 @@ class Paths:
         return os.path.join(self.config_dir, "updater.conf")
 
     @property
-    def legacy_registry_file(self) -> str:
-        """The pre-0.10 location. Only used to refuse helpfully, never read."""
-        return os.path.join(self.home, "mcus", "mcus.json")
+    def legacy_locations(self) -> list[str]:
+        """Registry paths we no longer look at. Used only to refuse helpfully.
+
+        Both are dead ends rather than things to migrate from, but finding one
+        while the current file is absent means the user has data somewhere we are
+        about to ignore - and silently reporting an empty registry is how the next
+        add-type overwrites it.
+        """
+        return [
+            os.path.join(self.home, "mcus", "mcus.json"),
+            # Short-lived: the directory was renamed with the project.
+            os.path.join(self.printer_data, "config", "klipper-updater", "mcus.cfg"),
+        ]
 
     # --- runtime state ---
 
@@ -151,9 +161,9 @@ class Paths:
         pdata = os.path.abspath(pdata)
 
         config = e.get("KLIPPER_UPDATER_CONFIG_DIR") or os.path.join(
-            pdata, "config", "klipper-updater"
+            pdata, "config", "mcu-updater"
         )
-        data = e.get("KLIPPER_UPDATER_DATA_DIR") or os.path.join(pdata, "klipper-updater")
+        data = e.get("KLIPPER_UPDATER_DATA_DIR") or os.path.join(pdata, "mcu-updater")
         bus = e.get("KLIPPER_UPDATER_FAKE_BUS") or DEFAULT_SERIAL_BY_ID
 
         return cls(

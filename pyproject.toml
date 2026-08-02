@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "klipper-updater"
+name = "mcu-updater"
 version = "0.9.0"
-description = "Klipper/Katapult firmware management with a Moonraker agent and Mainsail UI"
+description = "Klipper/Katapult MCU firmware management with a Moonraker agent and Mainsail UI"
 readme = "README.md"
 requires-python = ">=3.9"
 # Deliberately empty. See docs/ - the agent talks to Moonraker over a unix

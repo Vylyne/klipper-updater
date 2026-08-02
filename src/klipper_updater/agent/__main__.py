@@ -18,8 +18,8 @@ from .service import Agent, wait_for_socket
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="klipper-updater-agent",
-        description="Moonraker agent exposing klipper-updater to Mainsail",
+        prog="mcu-updater",
+        description="Moonraker agent exposing mcu-updater to Mainsail",
     )
     p.add_argument("--socket", default=None, help="Path to moonraker.sock")
     p.add_argument("--log", default=None, help="Log file (default: stderr only)")
@@ -39,7 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="On SIGTERM, wait this long for an in-progress flash to finish before "
         "exiting. Must be less than the unit's TimeoutStopSec.",
     )
-    p.add_argument("--version", action="version", version=f"{AGENT_NAME} {__version__}")
+    # AGENT_NAME is the Moonraker protocol identity, not the product name -
+    # report the latter here so it matches the CLI and the systemd unit.
+    p.add_argument("--version", action="version", version=f"mcu-updater {__version__}")
     return p
 
 

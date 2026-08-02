@@ -1,4 +1,4 @@
-"""The MCU registry: ``~/printer_data/config/klipper-updater/mcus.cfg``.
+"""The MCU registry: ``~/printer_data/config/mcu-updater/mcus.cfg``.
 
 Klipper-style, because it lives next to ``printer.cfg`` and gets hand-edited::
 
@@ -196,8 +196,8 @@ class Registry:
         surprise: the next add-type would write a fresh file while the real one
         sat untouched in the old location.
         """
-        legacy = paths.legacy_registry_file
-        if not os.path.exists(legacy):
+        legacy = next((p for p in paths.legacy_locations if os.path.exists(p)), None)
+        if legacy is None:
             return
         raise ConfigError(
             f"found a registry at the old location {legacy}, but nothing at "

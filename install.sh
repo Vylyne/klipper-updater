@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installs the klipper-updater Moonraker agent.
+# Installs the mcu-updater Moonraker agent.
 #
 # Idempotent: safe to re-run, which matters because Moonraker's update manager
 # re-runs it after every update.
@@ -7,9 +7,9 @@
 KLIPPER_PATH="${KLIPPER_PATH:-${HOME}/klipper}"
 KATAPULT_PATH="${KATAPULT_PATH:-${HOME}/katapult}"
 PRINTER_DATA="${PRINTER_DATA:-${HOME}/printer_data}"
-INSTALL_PATH="${INSTALL_PATH:-${HOME}/klipper-updater}"
-CONFIG_PATH="${CONFIG_PATH:-${PRINTER_DATA}/config/klipper-updater}"
-DATA_PATH="${DATA_PATH:-${PRINTER_DATA}/klipper-updater}"
+INSTALL_PATH="${INSTALL_PATH:-${HOME}/mcu-updater}"
+CONFIG_PATH="${CONFIG_PATH:-${PRINTER_DATA}/config/mcu-updater}"
+DATA_PATH="${DATA_PATH:-${PRINTER_DATA}/mcu-updater}"
 # Constrained from two directions:
 #  * Moonraker only permits a `managed_services` value equal to the
 #    [update_manager <name>] section, `klipper`, or `moonraker` - so the unit name
@@ -200,7 +200,7 @@ function add_update_manager {
         echo "[MOONRAKER] ${conf} not found, skipping update_manager entry."
         return 0
     fi
-    if grep -q "^\[update_manager klipper-updater\]" "${conf}"; then
+    if grep -q "^\[update_manager ${SERVICE_NAME}\]" "${conf}"; then
         printf "[MOONRAKER] update_manager entry already present.\n\n"
     else
         echo "[MOONRAKER] Adding update_manager entry to moonraker.conf..."
@@ -217,7 +217,7 @@ function allow_sudo_fallback {
     # machine.services API. This is purely the safety net for Moonraker dying
     # between the stop and the start, when that API is unreachable and the agent
     # would otherwise be unable to bring klipper back.
-    local target="/etc/sudoers.d/klipper-updater"
+    local target="/etc/sudoers.d/mcu-updater"
     if [ -f "${target}" ]; then
         printf "[SUDO] Fallback rule already installed.\n\n"
         return 0
@@ -237,7 +237,7 @@ function allow_sudo_fallback {
 
 EOF
     local answer=""
-    read -r -p "[SUDO] Install /etc/sudoers.d/klipper-updater? [y/N]: " answer || answer=""
+    read -r -p "[SUDO] Install /etc/sudoers.d/mcu-updater? [y/N]: " answer || answer=""
     case "${answer}" in
         y | Y | yes | YES) ;;
         *)
@@ -248,7 +248,7 @@ EOF
 
     local tmp
     tmp="$(mktemp)"
-    sed -e "s|%USER%|${USER}|g" "${INSTALL_PATH}/scripts/sudoers.d-klipper-updater" > "${tmp}"
+    sed -e "s|%USER%|${USER}|g" "${INSTALL_PATH}/scripts/sudoers.d-mcu-updater" > "${tmp}"
     # Validate before installing: a malformed sudoers file can lock you out of
     # sudo entirely, so never copy one in unchecked.
     if sudo visudo -c -f "${tmp}" >/dev/null 2>&1; then
@@ -270,7 +270,7 @@ function restart_moonraker {
 function print_next_steps {
     cat <<EOF
 ================================================================
- klipper-updater agent installed.
+ mcu-updater agent installed.
 
  Check it registered with Moonraker:
 
