@@ -81,12 +81,12 @@ class Api:
     # -- helpers -----------------------------------------------------------
 
     def settings(self) -> Settings:
-        """Re-read every time: the user may have edited updater.conf."""
+        """Re-read every time: the user may have edited mcu-updater.cfg."""
         try:
             return load_settings(self.paths.settings_file)
         except UpdaterError as exc:
             if self._log is not None:
-                self._log.warning(f"updater.conf is invalid, using defaults: {exc}")
+                self._log.warning(f"the [updater] section is invalid, using defaults: {exc}")
             return Settings()
 
     def registry(self) -> Registry:

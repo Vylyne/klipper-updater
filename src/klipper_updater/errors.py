@@ -139,7 +139,7 @@ class ServiceControlError(UpdaterError):
 
 
 class FlashingDisabledError(UpdaterError):
-    """The agent's flash capability is switched off in updater.conf.
+    """The agent's flash capability is switched off in mcu-updater.cfg.
 
     Off by default so that installing an update never silently grants a browser
     the ability to reflash the printer.

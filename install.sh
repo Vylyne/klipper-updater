@@ -10,6 +10,9 @@ PRINTER_DATA="${PRINTER_DATA:-${HOME}/printer_data}"
 INSTALL_PATH="${INSTALL_PATH:-${HOME}/mcu-updater}"
 CONFIG_PATH="${CONFIG_PATH:-${PRINTER_DATA}/config/mcu-updater}"
 DATA_PATH="${DATA_PATH:-${PRINTER_DATA}/mcu-updater}"
+# One file for everything hand-edited: the [updater] section and the [mcu ...]
+# sections. Must match Paths.main_config.
+MAIN_CONFIG="${CONFIG_PATH}/mcu-updater.cfg"
 # Constrained from two directions:
 #  * Moonraker only permits a `managed_services` value equal to the
 #    [update_manager <name>] section, `klipper`, or `moonraker` - so the unit name
@@ -70,36 +73,101 @@ function check_paths {
     printf "\n"
 }
 
+function check_flash_deps {
+    # flashtool.py does `import serial`. Without pyserial the failure lands in the
+    # middle of a flash, with klipper already stopped - so check it up front and
+    # offer to fix it.
+    if "${PYTHON_BIN}" -c 'import serial' >/dev/null 2>&1; then
+        printf "[DEPS] pyserial present.\n\n"
+        return 0
+    fi
+
+    echo "[DEPS] python3-serial is missing. katapult's flashtool.py needs it, and"
+    echo "       without it a flash fails part-way with klipper already stopped."
+    local answer=""
+    read -r -p "[DEPS] Install python3-serial with apt now? [Y/n]: " answer || answer=""
+    case "${answer}" in
+        n | N | no | NO)
+            echo "[WARN] Skipped. Flashing will not work until you run:"
+            printf "       sudo apt install python3-serial\n\n"
+            return 0
+            ;;
+    esac
+
+    if sudo apt-get install -y python3-serial; then
+        if "${PYTHON_BIN}" -c 'import serial' >/dev/null 2>&1; then
+            printf "[DEPS] Installed.\n\n"
+        else
+            # e.g. PYTHON_BIN is a venv without system site-packages.
+            echo "[WARN] python3-serial installed, but ${PYTHON_BIN} still cannot import it."
+            printf "       Flashing will not work until that interpreter can.\n\n"
+        fi
+    else
+        printf "[WARN] apt install failed. Run 'sudo apt install python3-serial' yourself.\n\n"
+    fi
+}
+
 function check_config {
     mkdir -p "${CONFIG_PATH}" "${DATA_PATH}"
 
     # A registry left at the pre-0.10 location would otherwise read as "no MCU
     # types configured", and the next add-type would write a fresh file while the
     # real one sat untouched. Refuse loudly instead.
-    if [ -f "${HOME}/mcus/mcus.json" ] && [ ! -f "${CONFIG_PATH}/mcus.cfg" ]; then
+    if [ -f "${HOME}/mcus/mcus.json" ] && [ ! -f "${MAIN_CONFIG}" ]; then
         echo "[ERROR] Found an old registry at ${HOME}/mcus/mcus.json but nothing at"
-        echo "        ${CONFIG_PATH}/mcus.cfg."
+        echo "        ${MAIN_CONFIG}."
         echo "        The layout moved - see docs/layout.md for the handful of commands."
         echo "        Refusing to continue so an empty registry cannot overwrite anything."
         exit 1
     fi
 
+    # Same again for the previous split-file layout. Settings now live in the
+    # [updater] section of the main config; a leftover updater.conf is no longer
+    # read, and enable_flashing silently reverting to false is worth saying out
+    # loud rather than leaving someone to wonder where the flash buttons went.
+    if [ -f "${CONFIG_PATH}/updater.conf" ]; then
+        echo "[WARN]  ${CONFIG_PATH}/updater.conf is no longer read."
+        echo "        Settings moved into the [updater] section of ${MAIN_CONFIG}."
+        echo "        Copy anything you had set across, then delete it."
+        printf "\n"
+    fi
+    if [ -f "${CONFIG_PATH}/mcus.cfg" ] && [ ! -f "${MAIN_CONFIG}" ]; then
+        echo "[ERROR] The registry is now ${MAIN_CONFIG}, not ${CONFIG_PATH}/mcus.cfg."
+        echo "        Rename it (settings and the [mcu ...] sections share one file now):"
+        echo "            mv ${CONFIG_PATH}/mcus.cfg ${MAIN_CONFIG}"
+        exit 1
+    fi
+
     # A broken registry is surfaced here, loudly, rather than by the agent
     # reporting it as an error to the UI after the fact.
-    if [ ! -f "${CONFIG_PATH}/mcus.cfg" ]; then
-        printf "[CONFIG] No registry at %s/mcus.cfg yet - nothing to validate.\n\n" "${CONFIG_PATH}"
+    if [ ! -f "${MAIN_CONFIG}" ]; then
+        printf "[CONFIG] No config at %s yet - nothing to validate.\n\n" "${MAIN_CONFIG}"
         return 0
     fi
+    # A traceback here would be noise: the exception message already says exactly
+    # what is wrong and how to fix it, so print that and nothing else.
     if PYTHONPATH="${INSTALL_PATH}/src" "${PYTHON_BIN}" -c '
 import sys
 from klipper_updater.config import Registry
+from klipper_updater.errors import UpdaterError
 from klipper_updater.paths import Paths
-reg = Registry.load(Paths.from_env())
-print(f"[CONFIG] {len(reg)} MCU type(s), {len(reg.all_serials())} tracked serial(s).")
+from klipper_updater.settings import load_settings
+paths = Paths.from_env()
+try:
+    reg = Registry.load(paths)
+    print(f"[CONFIG] {len(reg)} MCU type(s), {len(reg.all_serials())} tracked serial(s).")
+    # Same file, so a typo in [updater] is worth catching here too - the agent
+    # would otherwise fall back to defaults with only a line in its log.
+    s = load_settings(paths.settings_file)
+    state = "ENABLED" if s.enable_flashing else "disabled"
+    print(f"[CONFIG] Flashing from the web UI is {state}.")
+except UpdaterError as exc:
+    print(f"[ERROR] {exc}", file=sys.stderr)
+    sys.exit(1)
 '; then
         printf "\n"
     else
-        echo "[ERROR] ${CONFIG_PATH}/mcus.cfg could not be read. Fix or restore it, then re-run."
+        echo "[ERROR] Fix ${MAIN_CONFIG}, then re-run."
         exit 1
     fi
 }
@@ -141,8 +209,46 @@ function migrate_legacy_service {
             echo "[MIGRATE] Renaming the ${legacy_name} update_manager entry..."
             sed -i "s|^\[update_manager ${legacy_name}\]|[update_manager ${SERVICE_NAME}]|" "${conf}"
             sed -i "s|^managed_services:[[:space:]]*${legacy_name}[[:space:]]*\$|managed_services: ${SERVICE_NAME}|" "${conf}"
+
+            # The section also carries path: and origin:, which still point at the
+            # old clone and the old repo URL. Renaming only the header leaves
+            # Moonraker updating a directory that may not exist any more - and
+            # add_update_manager will not fix it, because it only appends when the
+            # section is absent. Take the correct values from the shipped template
+            # so they are defined in exactly one place.
+            local want_path want_origin
+            want_path="$(grep -m1 '^path:' "${INSTALL_PATH}/scripts/moonraker-update-manager.conf" || true)"
+            want_origin="$(grep -m1 '^origin:' "${INSTALL_PATH}/scripts/moonraker-update-manager.conf" || true)"
+            # Plain substitution rather than sed's `c\`, whose backslash handling
+            # swallows the expansion and writes the variable name verbatim.
+            # Scoped to lines mentioning the old name, so another add-on's
+            # update_manager section is never touched. '|' is safe as the
+            # delimiter: paths and URLs contain '/', never '|'.
+            if [ -n "${want_path}" ]; then
+                sed -i "s|^path:.*${legacy_name}.*|${want_path}|" "${conf}"
+            fi
+            if [ -n "${want_origin}" ]; then
+                sed -i "s|^origin:.*${legacy_name}.*|${want_origin}|" "${conf}"
+            fi
         fi
     done
+
+    # Whatever happened above, an update_manager path that does not exist means
+    # Moonraker will keep erroring on it. Say so rather than leaving it to be
+    # discovered later.
+    if [ -f "${conf}" ]; then
+        local declared
+        declared="$(sed -n "/^\[update_manager ${SERVICE_NAME}\]/,/^\[/p" "${conf}" \
+            | grep -m1 '^path:' | sed 's/^path:[[:space:]]*//' || true)"
+        if [ -n "${declared}" ]; then
+            # shellcheck disable=SC2088
+            case "${declared}" in "~/"*) declared="${HOME}/${declared#\~/}" ;; esac
+            if [ ! -d "${declared}" ]; then
+                echo "[WARN] moonraker.conf's update_manager path does not exist: ${declared}"
+                echo "       Moonraker will error on that section. Expected ${INSTALL_PATH}."
+            fi
+        fi
+    fi
 
     if [ "${backed_up}" -eq 1 ]; then
         printf "[MIGRATE] moonraker.conf updated (backup at %s.bak-mcu-updater).\n" "${conf}"
@@ -299,14 +405,15 @@ function print_next_steps {
    [update_manager mainsail]
    repo: Vylyne/mainsail        # was mainsail-crew/mainsail
 
- Config:    ${CONFIG_PATH}      (backed up, editable in Mainsail)
+ Config:    ${MAIN_CONFIG}     (backed up, editable in Mainsail)
+              one file: the [updater] section and one [mcu ...] per board
  Artifacts: ${DATA_PATH}        (generated, not backed up)
 
- Flashing from the web UI is OFF by default. To enable it, add to
- ${CONFIG_PATH}/updater.conf:
+ Flashing from the web UI is OFF by default. To enable it, add to the
+ [updater] section of ${MAIN_CONFIG}:
 
    [updater]
-   enable_flashing = true
+   enable_flashing: true
 
  ...then: sudo systemctl restart ${SERVICE_NAME}
 ================================================================
@@ -315,6 +422,7 @@ EOF
 
 preflight_checks
 check_paths
+check_flash_deps
 check_config
 migrate_legacy_service
 install_service

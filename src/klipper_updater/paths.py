@@ -62,11 +62,30 @@ class Paths:
     # --- hand-edited config ---
 
     @property
+    def main_config(self) -> str:
+        """One file for everything hand-edited.
+
+        The registry ([mcu <name>] sections) and the tool settings ([updater])
+        live together. They were separate while the registry was JSON - a
+        `_settings` key in a dict keyed by board name would have been ugly and
+        collision-prone - but .cfg sections namespace cleanly, so one file is
+        simply less to find and less to edit.
+        """
+        return os.path.join(self.config_dir, "mcu-updater.cfg")
+
+    @property
     def registry_file(self) -> str:
-        return os.path.join(self.config_dir, "mcus.cfg")
+        """The [mcu ...] sections. Same file as `main_config`."""
+        return self.main_config
 
     @property
     def settings_file(self) -> str:
+        """The [updater] section. Same file as `main_config`."""
+        return self.main_config
+
+    @property
+    def legacy_settings_file(self) -> str:
+        """Settings used to live here. Only used to warn, never read."""
         return os.path.join(self.config_dir, "updater.conf")
 
     @property
@@ -82,6 +101,8 @@ class Paths:
             os.path.join(self.home, "mcus", "mcus.json"),
             # Short-lived: the directory was renamed with the project.
             os.path.join(self.printer_data, "config", "klipper-updater", "mcus.cfg"),
+            # Short-lived: registry and settings were merged into one file.
+            os.path.join(self.config_dir, "mcus.cfg"),
         ]
 
     # --- runtime state ---

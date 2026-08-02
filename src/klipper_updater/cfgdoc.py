@@ -36,6 +36,26 @@ _COMMENT_RE = re.compile(r"^\s*[#;]")
 
 INDENT = "    "
 
+_TRUE = {"true", "yes", "on", "1"}
+_FALSE = {"false", "no", "off", "0"}
+
+
+def parse_bool(raw: Optional[str], default: Optional[bool] = False) -> Optional[bool]:
+    """Klipper-style truthiness. Returns None when the value is unrecognised, so
+    a caller can tell "not set" from "set to nonsense".
+
+    The registry passes a real default and treats an unrecognised value as that
+    default; settings pass ``default=None`` so both "absent" and "nonsense" come
+    back as None and the nonsense can be raised on."""
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    return None
+
 
 def _is_comment(line: str) -> bool:
     return bool(_COMMENT_RE.match(line))
@@ -78,12 +98,16 @@ class CfgDocument:
     def __init__(self, text: str = "") -> None:
         self.lines: list[str] = text.splitlines() if text else []
         self.sections: dict[str, Section] = {}
+        #: Names appearing more than once. First wins, so the later copy is dead
+        #: text - which is silent and confusing enough that callers refuse on it.
+        self.duplicate_sections: list[str] = []
         self._parse()
 
     # -- parsing -----------------------------------------------------------
 
     def _parse(self) -> None:
         self.sections = {}
+        self.duplicate_sections = []
         current: Optional[Section] = None
         current_option: Optional[Option] = None
 
@@ -92,8 +116,15 @@ class CfgDocument:
             if match:
                 current = Section(match.group("name").strip(), index)
                 # A duplicate section name keeps the first; last-wins would make
-                # a hand-edit silently shadow an earlier board.
-                self.sections.setdefault(current.name, current)
+                # a hand-edit silently shadow an earlier board. Record it either
+                # way so a loader can refuse rather than quietly drop half the
+                # file - appending a second [updater] block instead of editing
+                # the existing one is an easy and otherwise invisible mistake.
+                if current.name in self.sections:
+                    if current.name not in self.duplicate_sections:
+                        self.duplicate_sections.append(current.name)
+                else:
+                    self.sections[current.name] = current
                 current_option = None
                 continue
 

@@ -19,6 +19,8 @@ from klipper_updater.agent.events import RESERVED_EVENTS, EventEmitter
 from klipper_updater.agent.rpc import MoonrakerPeer, frame, unframe
 from klipper_updater.agent.service import Agent
 
+from .conftest import write_settings
+
 
 class FakeMoonraker:
     """Answers every request with a canned result and records what it saw."""
@@ -354,8 +356,7 @@ def test_a_build_driven_over_the_wire_streams_job_and_log_events(wired, paths):
 
     # dry_run so no toolchain is needed; the fake build log is still real output
     # through the real reporter, batcher and emitter.
-    with open(paths.settings_file, "w", encoding="utf-8") as fh:
-        fh.write("[updater]\ndry_run = true\nservice_backend = null\nclean_before_build = false\n")
+    write_settings(paths, dry_run="true", service_backend="null", clean_before_build="false")
     os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)
     with open(paths.config_file("bttebb36", "klipper"), "w", encoding="utf-8") as fh:
         fh.write("CONFIG_MACH_STM32=y\n")
@@ -415,8 +416,7 @@ def test_a_build_can_be_cancelled_over_the_wire(wired, paths, monkeypatch):
     # rather than scheduling luck.
     monkeypatch.setattr("klipper_updater.build.FAKE_BUILD_DELAY", 0.03)
 
-    with open(paths.settings_file, "w", encoding="utf-8") as fh:
-        fh.write("[updater]\ndry_run = true\nservice_backend = null\n")
+    write_settings(paths, dry_run="true", service_backend="null")
     os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)
     with open(paths.config_file("bttebb36", "klipper"), "w", encoding="utf-8") as fh:
         fh.write("CONFIG_MACH_STM32=y\n")

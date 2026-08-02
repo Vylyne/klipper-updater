@@ -19,7 +19,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 #: The real registry from the printer, committed at the repo root. Used directly
 #: as a fixture so the test suite fails if that sample is ever broken.
-LIVE_MCUS_CFG = REPO_ROOT / "mcus.cfg"
+LIVE_MCUS_CFG = REPO_ROOT / "mcu-updater.cfg"
 
 
 @pytest.fixture(autouse=True)
@@ -80,6 +80,30 @@ def cmd_tokens(cmd_line: str) -> list[str]:
     path with a space in it cannot produce a false match.
     """
     return cmd_line.split()
+
+
+def write_settings(paths: Paths, **values: object) -> None:
+    """Set keys in the ``[updater]`` section of the shared config file.
+
+    Settings and the registry live in one file, so this has to be a
+    load-modify-write: a plain ``open(..., "w")`` deletes every ``[mcu ...]``
+    section the fixture just wrote, and prepending a second ``[updater]`` block
+    is refused as a duplicate section.
+    """
+    import os
+
+    from klipper_updater.cfgdoc import CfgDocument
+
+    text = ""
+    if os.path.exists(paths.main_config):
+        with open(paths.main_config, encoding="utf-8") as fh:
+            text = fh.read()
+    doc = CfgDocument(text)
+    for key, value in values.items():
+        doc.set("updater", key, value)
+    os.makedirs(paths.config_dir, exist_ok=True)
+    with open(paths.main_config, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(doc.render())
 
 
 def make_device(bus_dir: pathlib.Path, fw: str, chipset: str, serial: str) -> pathlib.Path:

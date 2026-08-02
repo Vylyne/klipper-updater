@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 
 import pytest
 
@@ -92,7 +93,7 @@ def test_comments_survive_the_panel_adding_a_serial(paths, live_registry_text):
     reg.save(paths)
 
     out = _read(paths)
-    assert "# Klipper Updater MCU registry." in out
+    assert "# mcu-updater configuration." in out
     assert "NEWBOARD-if00" in out
     assert "src/Makefile -> src-y += buffer.c" in out
 
@@ -139,7 +140,7 @@ def test_removing_a_type_removes_only_its_section(paths, live_registry_text):
     out = _read(paths)
     assert "bttmmbv1" not in out
     assert "[mcu bttebb36]" in out
-    assert "# Klipper Updater MCU registry." in out
+    assert "# mcu-updater configuration." in out
 
 
 def test_a_new_type_is_appended_and_reloads(paths, live_registry_text):
@@ -210,7 +211,7 @@ def test_a_legacy_json_registry_is_refused_not_ignored(paths, fake_root):
     with pytest.raises(ConfigError) as exc:
         Registry.load(paths)
     assert "old location" in str(exc.value)
-    assert "mcus.cfg" in str(exc.value)
+    assert "mcu-updater.cfg" in str(exc.value)
 
 
 def test_a_fresh_install_with_no_files_at_all_is_empty(paths):
@@ -315,6 +316,19 @@ def test_the_file_stays_valid_klipper_style_cfg(paths, live_registry_text):
     doc = CfgDocument(live_registry_text)
     assert doc.section_names("mcu")
     assert doc.get("mcu sv08Mainboard", "chipset") == "stm32f103xe"
+
+
+def test_the_pre_merge_registry_filename_is_guarded(paths):
+    """mcus.cfg in the right directory, before it was merged with the settings.
+    The likeliest upgrade path, and the one where silently starting empty would
+    do the most damage."""
+    old = pathlib.Path(paths.config_dir) / "mcus.cfg"
+    old.write_text("[mcu a]\nchipset: x\nserials:\n    S1\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as exc:
+        Registry.load(paths)
+    assert "mcus.cfg" in str(exc.value)
+    assert "mcu-updater.cfg" in str(exc.value)
 
 
 def test_the_intermediate_config_dir_is_also_guarded(paths, fake_root):

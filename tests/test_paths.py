@@ -13,7 +13,7 @@ def test_defaults_follow_the_printer_data_layout():
     root = os.path.abspath(os.path.join("/srv", "printer", "printer_data"))
     assert p.config_dir == os.path.join(root, "config", "mcu-updater")
     assert p.data_dir == os.path.join(root, "mcu-updater")
-    assert p.registry_file == os.path.join(p.config_dir, "mcus.cfg")
+    assert p.registry_file == os.path.join(p.config_dir, "mcu-updater.cfg")
     assert p.serial_by_id == DEFAULT_SERIAL_BY_ID
 
 

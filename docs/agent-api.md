@@ -228,9 +228,9 @@ Flashing stops Klipper and writes to a board. It is therefore **not advertised
 unless it is explicitly switched on**:
 
 ```ini
-# ~/printer_data/config/mcu-updater/updater.conf
+# ~/printer_data/config/mcu-updater/mcu-updater.cfg
 [updater]
-enable_flashing = true
+enable_flashing: true
 ```
 
 Off by default so that updating the agent never silently grants a browser the

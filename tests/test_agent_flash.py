@@ -16,7 +16,7 @@ from klipper_updater.errors import ServiceControlError
 from klipper_updater.jobs import JobRunner
 from klipper_updater.service import Journal, NullService, klipper_stopped
 
-from .conftest import make_device
+from .conftest import make_device, write_settings
 
 TRACKED_SERIAL = "290055001850304158373620-if00"
 TRACKED_TYPE = "bttebb36"
@@ -24,10 +24,7 @@ TRACKED_CHIPSET = "stm32g0b1xx"
 
 
 def _write_settings(paths, **extra) -> None:
-    lines = ["[updater]", "dry_run = true", "service_backend = null"]
-    lines += [f"{k} = {v}" for k, v in extra.items()]
-    with open(paths.settings_file, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
+    write_settings(paths, dry_run="true", service_backend="null", **extra)
 
 
 def _stage_artifact(paths, mcu_type=TRACKED_TYPE) -> str:

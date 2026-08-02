@@ -4,8 +4,7 @@ Files are split by *what they are*, following the `printer_data` conventions.
 
 ```
 ~/printer_data/config/mcu-updater/     # hand-edited. backed up. editable in Mainsail.
-    mcus.cfg                               #   the MCU registry
-    updater.conf                           #   tool settings
+    mcu-updater.cfg                        #   [updater] settings + one [mcu ...] per board
     bttebb36/klipper.config                #   saved menuconfig answers, per type
     flylllplusbuffer/klipper.config
 
@@ -36,11 +35,17 @@ they're runtime state, not configuration.
 `~/printer_data/mcu-updater/` follows the pattern other add-ons use, e.g.
 `moonraker-timelapse` writing to `~/printer_data/timelapse/`.
 
-## The registry: `mcus.cfg`
+## One config file: `mcu-updater.cfg`
 
-Klipper-style, because it lives next to `printer.cfg` and gets hand-edited:
+Klipper-style, because it lives next to `printer.cfg` and gets hand-edited.
+Settings and the registry share it — `.cfg` sections namespace cleanly, so there
+is one file to find, one file to back up, and one file to open in Mainsail:
 
 ```ini
+# Tool settings. Every value has a default, so this section is optional.
+[updater]
+enable_flashing: true
+
 # Toolhead boards. The buffer patch is specific to this batch.
 [mcu flylllplusbuffer]
 chipset: stm32f072xb
@@ -60,6 +65,15 @@ klipper_makefile_patches:
 | `<fw>_makefile_patches` | `<file> -> <line>`, appended to that Makefile for one build then reverted. |
 
 `<fw>` is `klipper` or `katapult`.
+
+The `[updater]` section holds `make_jobs`, `clean_before_build`, `service`,
+`service_backend`, `dry_run`, `enable_flashing`, `allow_flash_while_printing`
+and `log_ring_size`. All optional.
+
+**Edit the existing `[updater]` section rather than appending a second one.** A
+duplicate section is refused outright: first-wins would mean
+`enable_flashing: true` in the later copy silently doing nothing, which is a
+miserable thing to debug.
 
 **Your comments survive.** The panel writes this file structurally when you add a
 serial or edit a type, and `configparser` would throw every comment away doing
@@ -107,12 +121,17 @@ Every path derives from one `Paths` object, so nothing is hardcoded elsewhere:
 
 ## Coming from the old layout
 
-Before this, everything lived in `~/mcus` with the registry as `mcus.json`.
-There is no automatic migration — it's a one-time move and the conversion isn't
-worth shipping code for. If the tool finds `~/mcus/mcus.json` and no `mcus.cfg`,
-it **refuses to start** rather than reporting an empty registry, because that
+Two moves have happened, and neither has automatic migration — each is a
+one-time job and the conversion isn't worth shipping code for. In both cases the
+tool **refuses to start** rather than reporting an empty registry, because that
 would let the next `add-type` write a fresh file while your real one sat
-untouched.
+untouched:
+
+- `~/mcus/mcus.json` → `~/printer_data/config/mcu-updater/mcu-updater.cfg`
+  (JSON to `.cfg`, and out of the home directory)
+- `mcus.cfg` + `updater.conf` → the single `mcu-updater.cfg`. Rename the
+  registry, then paste your old `[updater]` section into the top of it. A
+  leftover `updater.conf` is warned about, not read.
 
 To move across by hand:
 
@@ -124,8 +143,8 @@ mkdir -p "$NEW" ~/printer_data/mcu-updater
 cp -r ~/mcus/*/                "$NEW"/
 find "$NEW" -name '*.bin' -o -name '*.uf2' -o -name '*.build.json' -delete
 
-# write $NEW/mcus.cfg by hand (see mcus.cfg in this repo for a worked example),
-# or recreate it with add-type / add-serial
+# write $NEW/mcu-updater.cfg by hand (mcu-updater.cfg in this repo is a worked
+# example), or recreate it with add-type / add-serial
 rm -rf ~/mcus     # only once you have checked the new location works
 ```
 

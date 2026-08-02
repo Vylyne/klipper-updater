@@ -15,6 +15,9 @@ standard library only — no pip dependencies, no virtualenv.
 - [Katapult](https://github.com/Arksine/katapult) at `~/katapult` (for the
   `flashtool.py` used to flash over USB/CAN)
 - An ARM toolchain and `make`, i.e. whatever already builds Klipper for you
+- `python3-serial` — Katapult's `flashtool.py` imports it. `install.sh` offers to
+  apt-install it, because without it a flash fails part-way through with Klipper
+  already stopped.
 - `dfu-util`, only for installing Katapult onto a brand-new STM32 board
 - Passwordless `sudo` for `systemctl {start,stop} klipper`
 
@@ -43,12 +46,20 @@ confirmation prompts; `--force` where a prompt guards something destructive.
 
 ## Configuration
 
-### `~/printer_data/config/mcu-updater/mcus.cfg`
+### `~/printer_data/config/mcu-updater/mcu-updater.cfg`
 
-The registry. Klipper-style, because it sits next to `printer.cfg` and gets
-hand-edited — and **your comments survive** the panel writing to it.
+One file: tool settings and the MCU registry. Klipper-style, because it sits next
+to `printer.cfg` and gets hand-edited — and **your comments survive** the panel
+writing to it.
 
 ```ini
+# Every value here has a default, so this whole section is optional.
+[updater]
+enable_flashing: true      ; let the web UI flash boards. Off by default.
+make_jobs: 0               ; 0 = no -j flag, negative = one per CPU
+clean_before_build: true   ; leave on: a stale object mix flashes a wrong binary
+service: klipper           ; klipper-1, klipper-2... for KIAUH multi-instance
+
 # Toolhead boards. The buffer patch is specific to this batch.
 [mcu flylllplusbuffer]
 chipset: stm32f072xb
@@ -72,24 +83,16 @@ Per-type keys:
   would leak into every other type sharing that chipset and conflict on the next
   `git pull` of Klipper.
 
-`mcus.cfg` at the repo root is a real example copied from a working printer.
+Edit the existing `[updater]` section rather than appending a second one — a
+duplicate section is refused, because first-wins would make the settings in the
+later copy silently do nothing.
+
+`mcu-updater.cfg` at the repo root is a real example copied from a working printer.
 
 > **`makefile_patches` makes your firmware version say `-dirty`.** Klipper stamps
 > the version from git while the patch is applied, so the tree is briefly dirty.
 > `v0.13.0-712-g6d43f8b3-dirty-...` is expected for a patched type and does not
 > mean you have local Klipper modifications.
-
-### `~/printer_data/config/mcu-updater/updater.conf`
-
-Optional; every value has a default.
-
-```ini
-[updater]
-make_jobs = 0              ; 0 = no -j flag, negative = one per CPU
-clean_before_build = true  ; leave on: a stale object mix flashes a wrong binary
-service = klipper          ; klipper-1, klipper-2... for KIAUH multi-instance
-dry_run = false
-```
 
 ## Layout
 
@@ -100,8 +103,7 @@ reasoning.
 ~/mcu-updater/src/updatefw.py        entry point (a shim onto the package)
 
 ~/printer_data/config/mcu-updater/   hand-edited, backed up, editable in Mainsail
-    mcus.cfg                             the registry
-    updater.conf                         tool settings
+    mcu-updater.cfg                      settings + the MCU registry
     <type>/<fw>.config                   saved menuconfig answers
 
 ~/printer_data/mcu-updater/          generated, not backed up

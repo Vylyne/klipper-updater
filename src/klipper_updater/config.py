@@ -1,4 +1,4 @@
-"""The MCU registry: ``~/printer_data/config/mcu-updater/mcus.cfg``.
+"""The MCU registry: ``~/printer_data/config/mcu-updater/mcu-updater.cfg``.
 
 Klipper-style, because it lives next to ``printer.cfg`` and gets hand-edited::
 
@@ -38,7 +38,7 @@ import os
 from collections.abc import Iterable
 from typing import Any, Optional
 
-from .cfgdoc import CfgDocument
+from .cfgdoc import CfgDocument, parse_bool
 from .errors import (
     AmbiguousSerialError,
     ConfigCorruptError,
@@ -52,21 +52,6 @@ from .paths import FW_TARGETS, Paths
 
 SECTION_PREFIX = "mcu"
 PATCH_SEPARATOR = "->"
-
-_TRUE = {"true", "yes", "on", "1"}
-_FALSE = {"false", "no", "off", "0"}
-
-
-def _parse_bool(raw: Optional[str], default: bool) -> bool:
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in _TRUE:
-        return True
-    if value in _FALSE:
-        return False
-    return default
-
 
 @dataclasses.dataclass
 class MakefilePatch:
@@ -139,7 +124,7 @@ def section_name(mcu_type: str) -> str:
 
 
 class Registry:
-    """In-memory view of mcus.cfg, backed by a comment-preserving document."""
+    """In-memory view of mcu-updater.cfg, backed by a comment-preserving document."""
 
     def __init__(self, types: dict[str, McuType], doc: CfgDocument) -> None:
         self.types = types
@@ -159,6 +144,15 @@ class Registry:
                 doc = CfgDocument(fh.read())
         except OSError as exc:
             raise ConfigCorruptError(f"could not read {path}: {exc}", path=path) from exc
+
+        if doc.duplicate_sections:
+            dupes = ", ".join(f"[{name}]" for name in doc.duplicate_sections)
+            raise ConfigCorruptError(
+                f"{path}: duplicate section(s) {dupes}. Only the first copy is read, so "
+                f"everything in the later one is silently ignored - merge them into one.",
+                path=path,
+                value=doc.duplicate_sections,
+            )
 
         types: dict[str, McuType] = {}
         for section in doc.section_names(SECTION_PREFIX):
@@ -183,7 +177,7 @@ class Registry:
                     cfg.makefile_patches.append(patch)
             installed = doc.get(section, "katapult_installed")
             if installed is not None:
-                mcu.fw("katapult").installed = _parse_bool(installed, True)
+                mcu.fw("katapult").installed = parse_bool(installed, True)
             types[name] = mcu
 
         return cls(types, doc)
