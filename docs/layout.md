@@ -72,6 +72,27 @@ that must not vanish because you tapped a button on your phone.
 `src-y +=` lines from the command line, and a permanent edit would leak into
 every other type sharing that chipset and conflict on the next `git pull`.
 
+## The systemd unit is called `mcu-updater`
+
+Not `klipper-updater`, and that is load-bearing. KIAUH discovers instances with
+`^<component>(-[0-9a-zA-Z]+)?\.service$`, so `klipper-updater.service` matches
+the *Klipper* pattern: KIAUH treats it as a Klipper instance called "updater",
+opens it to read `EnvironmentFile=`, and its whole menu crashes if the unit is
+not world-readable.
+
+`klipper_updater` and `klipper-mcu-updater` happen to slip past that exact regex
+too, but only via quirks - an underscore is not a hyphen, and the character class
+forbids a second hyphen. A name that starts with no component name at all is safe
+by construction instead.
+
+The unit must also equal the `[update_manager <name>]` section, because Moonraker
+only accepts a `managed_services` value matching that, `klipper`, or `moonraker`.
+Both constraints point at the same answer.
+
+The unit is installed mode 0644 with `install`, not `cp`. `mktemp` creates 0600
+and `cp` carries that mode across, which is how the KIAUH crash was triggered in
+the first place.
+
 ## Overrides
 
 Every path derives from one `Paths` object, so nothing is hardcoded elsewhere:

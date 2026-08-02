@@ -1,10 +1,17 @@
 # Rendered by install.sh - %PLACEHOLDERS% are substituted there.
-# Installed to /etc/systemd/system/klipper-updater.service
+# Installed to /etc/systemd/system/mcu-updater.service
 #
-# The unit name is not cosmetic: Moonraker only accepts a `managed_services`
-# value matching the [update_manager <name>] section, `klipper`, or `moonraker`.
-# So the unit has to be called klipper-updater for Moonraker to be permitted to
-# restart it after an update.
+# The unit name is constrained from two directions, and neither is cosmetic:
+#
+#  * Moonraker only accepts a `managed_services` value matching the
+#    [update_manager <name>] section, `klipper`, or `moonraker` - so the unit
+#    name and that section name have to agree.
+#  * KIAUH discovers instances with ^<component>(-[0-9a-zA-Z]+)?\.service$, so
+#    anything called klipper-* is mistaken for a Klipper instance. It then tries
+#    to read the unit and its whole menu crashes.
+#
+# Hence a name that does not begin with a component name at all. Do not rename
+# this to klipper-anything.
 
 [Unit]
 Description=Klipper Updater Moonraker Agent
@@ -23,7 +30,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%INSTALL_DIR%/src
 ExecStart=%PYTHON% -m klipper_updater.agent \
     --socket %PRINTER_DATA%/comms/moonraker.sock \
-    --log %PRINTER_DATA%/logs/klipper-updater.log \
+    --log %PRINTER_DATA%/logs/mcu-updater.log \
     --shutdown-grace 280
 Restart=always
 RestartSec=5

@@ -10,12 +10,15 @@ PRINTER_DATA="${PRINTER_DATA:-${HOME}/printer_data}"
 INSTALL_PATH="${INSTALL_PATH:-${HOME}/klipper-updater}"
 CONFIG_PATH="${CONFIG_PATH:-${PRINTER_DATA}/config/klipper-updater}"
 DATA_PATH="${DATA_PATH:-${PRINTER_DATA}/klipper-updater}"
-# Must match the [update_manager <name>] section in
-# scripts/moonraker-update-manager.conf. Moonraker only permits a
-# `managed_services` value equal to the section name, `klipper`, or `moonraker`,
-# so the unit name and the section name have to agree.
-SERVICE_NAME="klipper-updater"
-LEGACY_SERVICE_NAME="klipper_updater_agent"
+# Constrained from two directions:
+#  * Moonraker only permits a `managed_services` value equal to the
+#    [update_manager <name>] section, `klipper`, or `moonraker` - so the unit name
+#    and that section name must agree.
+#  * KIAUH finds instances with ^<component>(-[0-9a-zA-Z]+)?\.service$, so a unit
+#    called klipper-* is taken for a Klipper instance and crashes its menu.
+# Hence a name that starts with no component name at all.
+SERVICE_NAME="mcu-updater"
+LEGACY_SERVICE_NAMES="klipper_updater_agent klipper-updater"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
 
 set -eu
@@ -102,36 +105,57 @@ print(f"[CONFIG] {len(reg)} MCU type(s), {len(reg.all_serials())} tracked serial
 }
 
 function migrate_legacy_service {
-    # The unit was originally called klipper_updater_agent, which Moonraker
-    # rejects as a managed_services value (it only allows the update_manager
-    # section name, klipper, or moonraker). Clean up the old one so there aren't
-    # two units racing for the same socket.
-    local legacy="/etc/systemd/system/${LEGACY_SERVICE_NAME}.service"
-    if [ -f "${legacy}" ]; then
-        echo "[MIGRATE] Removing the old ${LEGACY_SERVICE_NAME} service..."
-        sudo systemctl stop "${LEGACY_SERVICE_NAME}.service" 2>/dev/null || true
-        sudo systemctl disable "${LEGACY_SERVICE_NAME}.service" 2>/dev/null || true
-        sudo rm -f "${legacy}"
-        sudo systemctl daemon-reload
-        printf "[MIGRATE] Removed.\n\n"
-    fi
-
+    # Two previous names, each removed for a concrete reason:
+    #   klipper_updater_agent - Moonraker rejects it as a managed_services value
+    #   klipper-updater       - KIAUH mistakes it for a Klipper instance and, if
+    #                           the unit is not world-readable, crashes its menu
+    # Leaving either behind means two units racing for the same socket.
     local asvc="${PRINTER_DATA}/moonraker.asvc"
-    if [ -f "${asvc}" ] && grep -qxF "${LEGACY_SERVICE_NAME}" "${asvc}"; then
-        echo "[MIGRATE] Dropping stale ${LEGACY_SERVICE_NAME} from moonraker.asvc..."
-        sed -i "/^${LEGACY_SERVICE_NAME}\$/d" "${asvc}"
-        printf "[MIGRATE] Done.\n\n"
+    local conf="${PRINTER_DATA}/config/moonraker.conf"
+    local backed_up=0
+    local legacy_name legacy_unit
+
+    for legacy_name in ${LEGACY_SERVICE_NAMES}; do
+        legacy_unit="/etc/systemd/system/${legacy_name}.service"
+        if [ -f "${legacy_unit}" ]; then
+            echo "[MIGRATE] Removing the old ${legacy_name} service..."
+            sudo systemctl stop "${legacy_name}.service" 2>/dev/null || true
+            sudo systemctl disable "${legacy_name}.service" 2>/dev/null || true
+            sudo rm -f "${legacy_unit}"
+            sudo systemctl daemon-reload
+        fi
+
+        if [ -f "${asvc}" ] && grep -qxF "${legacy_name}" "${asvc}"; then
+            echo "[MIGRATE] Dropping stale ${legacy_name} from moonraker.asvc..."
+            sed -i "/^${legacy_name}\$/d" "${asvc}"
+        fi
+
+        # Repair a moonraker.conf written by an earlier install. add_update_manager
+        # only appends when the section is absent, so without this a re-run would
+        # leave the stale section in place.
+        if [ -f "${conf}" ] && grep -qE "^\[update_manager ${legacy_name}\]|^managed_services:[[:space:]]*${legacy_name}[[:space:]]*\$" "${conf}"; then
+            if [ "${backed_up}" -eq 0 ]; then
+                cp "${conf}" "${conf}.bak-mcu-updater"
+                backed_up=1
+            fi
+            echo "[MIGRATE] Renaming the ${legacy_name} update_manager entry..."
+            sed -i "s|^\[update_manager ${legacy_name}\]|[update_manager ${SERVICE_NAME}]|" "${conf}"
+            sed -i "s|^managed_services:[[:space:]]*${legacy_name}[[:space:]]*\$|managed_services: ${SERVICE_NAME}|" "${conf}"
+        fi
+    done
+
+    if [ "${backed_up}" -eq 1 ]; then
+        printf "[MIGRATE] moonraker.conf updated (backup at %s.bak-mcu-updater).\n" "${conf}"
     fi
 
-    # Repair a moonraker.conf written by an earlier install: the bad
-    # managed_services value makes Moonraker refuse to load the whole section.
-    local conf="${PRINTER_DATA}/config/moonraker.conf"
-    if [ -f "${conf}" ] && grep -q "^managed_services:[[:space:]]*${LEGACY_SERVICE_NAME}[[:space:]]*\$" "${conf}"; then
-        echo "[MIGRATE] Fixing managed_services in moonraker.conf..."
-        cp "${conf}" "${conf}.bak-klipper-updater"
-        sed -i "s/^managed_services:[[:space:]]*${LEGACY_SERVICE_NAME}[[:space:]]*\$/managed_services: ${SERVICE_NAME}/" "${conf}"
-        printf "[MIGRATE] Fixed (backup at %s.bak-klipper-updater).\n\n" "${conf}"
+    # An earlier install.sh used `sudo cp` from a mktemp file, so the unit could
+    # be mode 0600 and unreadable to anything scanning /etc/systemd/system.
+    local unit="/etc/systemd/system/${SERVICE_NAME}.service"
+    if [ -f "${unit}" ] && [ ! -r "${unit}" ]; then
+        echo "[MIGRATE] Fixing permissions on ${unit}..."
+        sudo chmod 0644 "${unit}"
     fi
+    printf "\n"
 }
 
 function install_service {
@@ -144,7 +168,10 @@ function install_service {
         -e "s|%PYTHON%|${PYTHON_BIN}|g" \
         "${INSTALL_PATH}/scripts/${SERVICE_NAME}.service" > "${tmp}"
 
-    sudo cp "${tmp}" "/etc/systemd/system/${SERVICE_NAME}.service"
+    # install, not cp: mktemp creates 0600, and cp would carry that mode over,
+    # leaving a unit only root can read. Anything that scans /etc/systemd/system
+    # as a normal user then dies on it - which is exactly how this broke KIAUH.
+    sudo install -m 0644 -o root -g root "${tmp}" "/etc/systemd/system/${SERVICE_NAME}.service"
     rm -f "${tmp}"
     sudo systemctl daemon-reload
     sudo systemctl enable "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
@@ -255,12 +282,16 @@ function print_next_steps {
      -H 'Content-Type: application/json' \\
      -d '{"agent":"klipper_updater","method":"fw.status","arguments":{}}'
 
- Logs:   ${PRINTER_DATA}/logs/klipper-updater.log
+ Logs:   ${PRINTER_DATA}/logs/mcu-updater.log
          (not in Mainsail's Logfiles panel - that lists a fixed set - but it is
           downloadable through Moonraker's file manager)
  Status: sudo systemctl status ${SERVICE_NAME}
 
  The CLI is unchanged and still works:  ${INSTALL_PATH}/src/updatefw.py status
+
+ The systemd unit is 'mcu-updater', deliberately not 'klipper-*': KIAUH
+ matches ^klipper(-[0-9a-zA-Z]+)?.service$ and would mistake it for a Klipper
+ instance.
 
  For the Mainsail panel, point your Update Manager at the fork by changing
  one line in moonraker.conf:

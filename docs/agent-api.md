@@ -308,7 +308,7 @@ dead until a human notices:
 
 The agent also **refuses to exit while a flash is in progress** (SIGTERM is
 deferred up to `--shutdown-grace`, under the unit's `TimeoutStopSec`), because
-`systemctl restart klipper-updater` mid-write would otherwise leave half an image
+`systemctl restart mcu-updater` mid-write would otherwise leave half an image
 on a board.
 
 ### The log, and its sequence numbers
