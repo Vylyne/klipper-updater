@@ -705,3 +705,63 @@ def test_a_menuconfig_symbol_is_its_own_screen(session):
 def test_entering_a_choice_is_refused(session):
     with pytest.raises(KconfigError):
         session.enter(choice_row(session)["id"])
+
+
+# --------------------------------------------------------------------------
+# friendly naming
+#
+# The first real Katapult tree rendered its dropdowns as MACH_STM32 /
+# STM32_FLASH_START_0000 - the symbol names, which are what must be *sent* but not
+# what should be *shown*.
+# --------------------------------------------------------------------------
+
+
+def test_a_choice_carries_prompts_for_display_and_names_for_sending(session):
+    ch = choice_row(session)
+    assert ch["options"] == [
+        {"value": "MACH_STM32", "label": "STMicroelectronics STM32"},
+        {"value": "MACH_RP2040", "label": "Raspberry Pi RP2040"},
+    ]
+    # The value stays the identifier; the label is only for reading.
+    assert ch["value"] == "MACH_STM32"
+    assert ch["value_label"] == "STMicroelectronics STM32"
+    assert ch["assignable"] == ["MACH_STM32", "MACH_RP2040"]
+
+
+def test_the_label_follows_the_selection(session):
+    session.set_value(choice_row(session)["id"], "MACH_RP2040")
+    ch = choice_row(session)
+    assert ch["value"] == "MACH_RP2040"
+    assert ch["value_label"] == "Raspberry Pi RP2040"
+
+
+def test_options_are_absent_for_anything_that_is_not_a_choice(session):
+    """So the select cannot accidentally be handed an empty item list."""
+    for name in ("BOARD_NAME", "WITH_HELP", "STM32_CLOCK_REF"):
+        node = row(session, name)
+        assert node["options"] is None, name
+        assert node["value_label"] is None, name
+
+
+def test_an_option_with_no_prompt_falls_back_to_its_name(tmp_path):
+    """Rare, but a label of "" would render as an empty dropdown entry that cannot
+    be told apart from the others."""
+    tree = make_tree(tmp_path, "klipper")
+    (tree / "src" / "Kconfig").write_text(
+        'mainmenu "T"\n'
+        "choice\n"
+        '    prompt "Pick"\n'
+        "config OPT_NAMED\n"
+        '    bool "Has a prompt"\n'
+        "config OPT_BARE\n"
+        "    bool\n"
+        "endchoice\n",
+        encoding="utf-8",
+    )
+    kconf, s = parse(tree)
+    ch = next(r for r in s.menu(kconf.top_node.list) if r["kind"] == "choice")
+    labels = {o["value"]: o["label"] for o in ch["options"]}
+    assert labels.get("OPT_NAMED") == "Has a prompt"
+    # A bare option has no prompt at all, so kconfiglib does not offer it - but if
+    # it ever does, it must not come through with an empty label.
+    assert all(o["label"] for o in ch["options"])

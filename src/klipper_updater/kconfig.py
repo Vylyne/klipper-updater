@@ -236,6 +236,22 @@ class Serializer:
             return selected.name if selected is not None else None
         return item.str_value
 
+    def value_label(self, node: Any) -> Optional[str]:
+        """How the current value should read.
+
+        For a choice that is the selected option's prompt rather than its symbol
+        name; for everything else the value speaks for itself.
+        """
+        if not self.is_choice(node):
+            return None
+        selected = node.item.selection
+        if selected is None:
+            return None
+        for name, prompt in self._choice_pairs(node):
+            if name == selected.name:
+                return prompt or name
+        return selected.name
+
     def assignable(self, node: Any) -> list[str]:
         """What this node can be set to *right now*.
 
@@ -261,13 +277,29 @@ class Serializer:
         return ["<value>"] if getattr(item, "visibility", 0) > 0 else []
 
     def choice_options(self, node: Any) -> list[str]:
-        """The selectable option names of a choice, in declaration order.
+        """The selectable option *names* of a choice, in declaration order.
+
+        These are what gets sent back to set the choice. What gets *shown* is
+        :meth:`choice_labels` - the symbol name is the identifier, not the label.
 
         Only the visible ones: an option whose own dependencies are unmet is not a
         thing the user can pick, and offering it would produce a radio button that
         refuses to take.
         """
-        out = []
+        return [name for name, _ in self._choice_pairs(node)]
+
+    def choice_labels(self, node: Any) -> list[dict[str, str]]:
+        """Each option as ``{value, label}``, ready for a select.
+
+        Kconfig gives every option a prompt - "STMicroelectronics STM32" - and
+        showing the symbol name instead turns a readable menu into a wall of
+        MACH_STM32 / STM32_FLASH_START_0000. The name is still what travels back,
+        because that is what identifies the option.
+        """
+        return [{"value": name, "label": prompt or name} for name, prompt in self._choice_pairs(node)]
+
+    def _choice_pairs(self, node: Any) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
         child = node.list
         while child:
             if (
@@ -275,7 +307,7 @@ class Serializer:
                 and getattr(child.item, "name", None)
                 and child.item.visibility > 0
             ):
-                out.append(child.item.name)
+                out.append((child.item.name, child.prompt[0] if child.prompt else ""))
             child = child.next
         return out
 
@@ -343,6 +375,11 @@ class Serializer:
             "value": self.value(node),
             "visible": self.visible(node),
             "assignable": self.assignable(node),
+            # Present for choices only: the same options with their prompts,
+            # so a select can show "STMicroelectronics STM32" while still
+            # sending MACH_STM32.
+            "options": self.choice_labels(node) if kind == "choice" else None,
+            "value_label": self.value_label(node),
             "editable": self.editable(node),
             "range": self.value_range(node),
             "has_help": bool(getattr(node, "help", None)),
