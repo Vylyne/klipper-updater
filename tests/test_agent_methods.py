@@ -100,6 +100,7 @@ def test_status_type_shape(api):
         "serial",
         "state",
         "path",
+        "mcu",
         "running_version",
         "running_sha",
         "needs_flash",
@@ -1030,7 +1031,7 @@ def test_the_commit_is_extracted_from_a_git_describe(version, sha):
 
 def test_a_board_behind_the_source_tree_needs_flashing(api):
     head = "d7cea5bb1aca70849f28d0bb98ab1b96b9f6db65"
-    versions = {"A-if00": "v0.13.0-623-gaea1bcf5"}
+    versions = {"A-if00": {"version": "v0.13.0-623-gaea1bcf5", "mcu": "mcu hexa"}}
     state = api.flash_state("A-if00", versions, head)
     assert state["needs_flash"] is True
     assert state["running_sha"] == "aea1bcf5"
@@ -1038,14 +1039,16 @@ def test_a_board_behind_the_source_tree_needs_flashing(api):
 
 def test_a_board_at_the_source_tree_does_not(api):
     head = "d7cea5bb1aca70849f28d0bb98ab1b96b9f6db65"
-    assert api.flash_state("A-if00", {"A-if00": "v0.13.0-711-gd7cea5bb"}, head)["needs_flash"] is False
+    info = {"A-if00": {"version": "v0.13.0-711-gd7cea5bb", "mcu": "mcu"}}
+    assert api.flash_state("A-if00", info, head)["needs_flash"] is False
 
 
 def test_a_dirty_version_still_matches(api):
     """A type with makefile patches is dirty by construction - the patch is in place
     while klipper stamps its version - so dirty must not mean out of date."""
     head = "6d43f8b3ddbfab679d1a64cb6f9f7adbe851ee82"
-    state = api.flash_state("A-if00", {"A-if00": "v0.13.0-712-g6d43f8b3-dirty"}, head)
+    info = {"A-if00": {"version": "v0.13.0-712-g6d43f8b3-dirty", "mcu": "mcu T0_buffer"}}
+    state = api.flash_state("A-if00", info, head)
     assert state["needs_flash"] is False
 
 
@@ -1053,8 +1056,8 @@ def test_a_dirty_version_still_matches(api):
     ("versions", "head", "why"),
     [
         ({}, "d7cea5bb", "the board is offline or klippy is unreachable"),
-        ({"A-if00": "v0.12.0"}, "d7cea5bb", "running something with no commit in it"),
-        ({"A-if00": "v0.13.0-711-gd7cea5bb"}, None, "no git metadata in the source tree"),
+        ({"A-if00": {"version": "v0.12.0", "mcu": "mcu"}}, "d7cea5bb", "no commit in the version"),
+        ({"A-if00": {"version": "v0.13.0-711-gd7cea5bb", "mcu": "mcu"}}, None, "no git metadata"),
     ],
 )
 def test_unknown_is_reported_as_unknown_not_as_up_to_date(api, versions, head, why):
@@ -1063,7 +1066,7 @@ def test_unknown_is_reported_as_unknown_not_as_up_to_date(api, versions, head, w
     assert api.flash_state("A-if00", versions, head)["needs_flash"] is None, why
 
 
-def test_running_versions_joins_serials_to_mcu_versions(paths, live_registry_text):
+def test_mcu_info_joins_serials_to_versions_and_names(paths, live_registry_text):
     """Klipper lowercases config section names while the printer object keeps the
     case from the file, so `[mcu EBBT0]` is object "mcu EBBT0" and setting
     "mcu ebbt0". Joining them case-sensitively would find nothing."""
@@ -1096,13 +1099,13 @@ def test_running_versions_joins_serials_to_mcu_versions(paths, live_registry_tex
         return None
 
     api = Api(paths, call=fake_call)
-    assert api.running_versions() == {
-        "2100-if00": "v0.13.0-711-gd7cea5bb",
-        "2900-if00": "v0.13.0-712-g6d43f8b3",
+    assert api.mcu_info() == {
+        "2100-if00": {"version": "v0.13.0-711-gd7cea5bb", "mcu": "mcu"},
+        "2900-if00": {"version": "v0.13.0-712-g6d43f8b3", "mcu": "mcu EBBT0"},
     }
     # The object list is cached, so a second call costs one probe, not two.
     calls.clear()
-    api.running_versions()
+    api.mcu_info()
     assert calls == ["printer.objects.query"]
 
 
@@ -1113,8 +1116,8 @@ def test_two_boards_of_one_type_can_disagree(paths, live_registry_text, fake_roo
         fh.write(live_registry_text)
     api = Api(paths)
     versions = {
-        "290055001850304158373620-if00": "v0.13.0-711-gd7cea5bb",
-        "230048001750304158373620-if00": "v0.13.0-623-gaea1bcf5",
+        "290055001850304158373620-if00": {"version": "v0.13.0-711-gd7cea5bb", "mcu": "mcu EBBT0"},
+        "230048001750304158373620-if00": {"version": "v0.13.0-623-gaea1bcf5", "mcu": "mcu EBBT1"},
     }
     head = "d7cea5bb1aca70849f28d0bb98ab1b96b9f6db65"
 
@@ -1139,3 +1142,14 @@ def test_status_fetches_the_version_map_once_not_once_per_type(paths, live_regis
     api.dispatch("fw.status")
     assert calls.count("printer.objects.list") <= 1
     assert calls.count("printer.objects.query") <= 2  # activity probe + versions
+
+
+def test_the_klipper_mcu_name_travels_with_the_serial(api):
+    """A serial is meaningless until you know which MCU it is. The name is the
+    printer object verbatim - "mcu", "mcu EBBT0" - matching what Mainsail's own
+    System Loads panel shows, so the two read consistently."""
+    head = "d7cea5bb1aca70849f28d0bb98ab1b96b9f6db65"
+    info = {"A-if00": {"version": "v0.13.0-711-gd7cea5bb", "mcu": "mcu EBBT0"}}
+    assert api.flash_state("A-if00", info, head)["mcu"] == "mcu EBBT0"
+    # Unknown board: no name to give, and None rather than a guess.
+    assert api.flash_state("B-if00", info, head)["mcu"] is None

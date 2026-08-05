@@ -187,7 +187,7 @@ class Api:
         self,
         reg: Registry,
         name: str,
-        versions: Optional[dict[str, str]] = None,
+        versions: Optional[dict[str, dict[str, str]]] = None,
         fw_head: Optional[str] = None,
     ) -> dict[str, Any]:
         """One type's state, including what each of its boards is *running*.
@@ -200,7 +200,7 @@ class Api:
 
         mcu = reg.get(name)
         if versions is None:
-            versions = self.running_versions()
+            versions = self.mcu_info()
         if fw_head is None:
             fw_head = git_head(self.paths.fw_dir("klipper"))
 
@@ -269,7 +269,7 @@ class Api:
         activity = self._printer_activity()
         from ..build import git_head
 
-        versions = self.running_versions()
+        versions = self.mcu_info()
         fw_head = git_head(self.paths.fw_dir("klipper"))
         return {
             "types": [self.type_status(reg, n, versions, fw_head) for n in reg.names()],
@@ -301,7 +301,7 @@ class Api:
         from ..build import git_head
 
         reg = self.registry()
-        versions = self.running_versions()
+        versions = self.mcu_info()
         fw_head = git_head(self.paths.fw_dir("klipper"))
         return {"types": [self.type_status(reg, n, versions, fw_head) for n in reg.names()]}
 
@@ -1080,7 +1080,7 @@ class Api:
         self._mcu_names_at = now
         return names
 
-    def running_versions(self) -> dict[str, str]:
+    def mcu_info(self) -> dict[str, dict[str, str]]:
         """Tracked serial -> the firmware version that board is actually running.
 
         This is the thing staleness could not tell you. `staleness()` compares the
@@ -1117,33 +1117,41 @@ class Api:
             if isinstance(path, str) and path:
                 serial_by_section[section.lower()] = _serial_from_path(path)
 
-        out: dict[str, str] = {}
+        out: dict[str, dict[str, str]] = {}
         for name in names:
             version = (status.get(name) or {}).get("mcu_version")
             serial = serial_by_section.get(name.lower())
             if isinstance(version, str) and version and serial:
-                out[serial] = version
+                # The object name verbatim - "mcu", "mcu EBBT0" - because that is
+                # exactly what Mainsail's own System Loads panel shows, and a serial
+                # is meaningless until you know which MCU it is.
+                out[serial] = {"version": version, "mcu": name}
         return out
 
-    def flash_state(self, serial: str, versions: dict[str, str], fw_head: Optional[str]) -> dict[str, Any]:
+    def flash_state(
+        self, serial: str, info: dict[str, dict[str, str]], fw_head: Optional[str]
+    ) -> dict[str, Any]:
         """Whether this board is running the firmware the source tree would build.
 
         `None` for "cannot tell" rather than False, because an offline board or an
         unreachable Klippy is not evidence that a board is current - and reporting
         "up to date" without having checked is exactly the bug this fixes.
         """
-        version = versions.get(serial)
+        entry = info.get(serial) or {}
+        version = entry.get("version")
+        mcu = entry.get("mcu")
         running = _running_sha(version or "")
         if version is None:
-            return {"running_version": None, "running_sha": None, "needs_flash": None}
+            return {"mcu": mcu, "running_version": None, "running_sha": None, "needs_flash": None}
         if running is None or not fw_head:
             # Running something we cannot pin to a commit - a hand-built firmware,
             # or a klipper checkout with no git metadata.
-            return {"running_version": version, "running_sha": None, "needs_flash": None}
+            return {"mcu": mcu, "running_version": version, "running_sha": None, "needs_flash": None}
         # `-dirty` is normal here and must not read as a mismatch: a type with
         # makefile patches is dirty by construction, because the patch is in place
         # while klipper stamps its version.
         return {
+            "mcu": mcu,
             "running_version": version,
             "running_sha": running,
             "needs_flash": not fw_head.startswith(running),
