@@ -263,3 +263,77 @@ def test_the_parser_does_not_depend_on_the_words_found_dfu(monkeypatch):
         'Detected DFU: [0483:df11] devnum=7, path="1-2", alt=0, serial="ABC123"\n',
     )
     assert len(flash_mod.list_dfu_devices()) == 1
+
+
+# --------------------------------------------------------------------------
+# the exit code dfu-util returns after a *successful* :leave
+# --------------------------------------------------------------------------
+
+#: Captured verbatim from a real EBB flash. The write succeeded; dfu-util then
+#: exited 74 because the board had already detached to run the new firmware.
+_REAL_LEAVE_TRANSCRIPT = [
+    "dfu-util: A valid DFU suffix will be required in a future dfu-util release",
+    "Opening DFU capable USB device...",
+    "Device ID 0483:df11",
+    "Claiming USB DFU Interface...",
+    "Performing mass erase, this can take a moment",
+    "Downloading element to address = 0x08000000, size = 4720",
+    "Download        [=========================] 100%         4720 bytes",
+    "Download done.",
+    "File downloaded successfully",
+    "Submitting leave request...",
+    "dfu-util: Error during download get_status",
+]
+
+
+def _fake_run_streamed(monkeypatch, rc: int, lines: list[str]) -> None:
+    def fake(cmd, *, cwd=None, reporter=None, dry_run=False, fake_delay=0.0, cancel=None):
+        if reporter is not None:
+            for line in lines:
+                reporter("stdout", line)
+        return rc
+
+    monkeypatch.setattr(flash_mod, "run_streamed", fake)
+
+
+def test_the_exit_code_after_a_successful_leave_is_not_a_failure(paths, ready, monkeypatch):
+    """`:leave` makes the board detach to boot the new firmware, so dfu-util's
+    final status read cannot succeed and it exits 74. The flash worked."""
+    _fake_dfu_util(monkeypatch, _REAL_ONE_BOARD)
+    _fake_run_streamed(monkeypatch, 74, _REAL_LEAVE_TRANSCRIPT)
+
+    events: list[tuple[str, str]] = []
+    flash_dfu_stm32(
+        paths,
+        ready,
+        str(paths.bin_file("board", "klipper")),
+        reporter=lambda s, line: events.append((s, line)),
+    )
+    assert any("expected" in line for _, line in events)
+
+
+def test_a_real_dfu_failure_still_raises(paths, ready, monkeypatch):
+    """No success marker, so nothing reached the board - must not be excused."""
+    _fake_dfu_util(monkeypatch, _REAL_ONE_BOARD)
+    _fake_run_streamed(
+        monkeypatch,
+        74,
+        ["Opening DFU capable USB device...", "dfu-util: Cannot open DFU device"],
+    )
+    with pytest.raises(FlashError):
+        flash_dfu_stm32(paths, ready, str(paths.bin_file("board", "klipper")))
+
+
+def test_a_download_that_succeeds_then_fails_unrecognisably_still_raises(
+    paths, ready, monkeypatch
+):
+    """Being permissive only for the known leave artifact: an unfamiliar error
+    after a good download is not something to wave through."""
+    _fake_dfu_util(monkeypatch, _REAL_ONE_BOARD)
+    _fake_run_streamed(
+        monkeypatch,
+        74,
+        ["File downloaded successfully", "dfu-util: something nobody has seen before"],
+    )
+    with pytest.raises(FlashError):
+        flash_dfu_stm32(paths, ready, str(paths.bin_file("board", "klipper")))

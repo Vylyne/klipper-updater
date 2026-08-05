@@ -222,6 +222,32 @@ def list_dfu_devices(*, reporter: Reporter = null_reporter) -> list[str]:
     return list(devices.values())
 
 
+#: dfu-util's own statement that the image is on the board.
+_DFU_WRITE_OK_RE = re.compile(r"file downloaded successfully|download done", re.IGNORECASE)
+
+#: The failure that follows a successful `:leave`, across dfu-util versions. The
+#: device is gone by design, so the request it is complaining about was never
+#: going to be answered.
+_DFU_LEAVE_NOISE_RE = re.compile(
+    r"error during download get_status"
+    r"|unable to read dfu status after completion"
+    r"|lost device after",
+    re.IGNORECASE,
+)
+
+
+def _dfu_left_successfully(transcript: list[str]) -> bool:
+    """Did the write succeed and only the post-`leave` status read fail?
+
+    Requires *both* signals. An unrecognised error after a successful download
+    still fails: reporting a bricked board as flashed is far worse than the false
+    failure this exists to stop, and the caller's re-enumeration wait is what
+    ultimately confirms it either way.
+    """
+    text = "\n".join(transcript)
+    return bool(_DFU_WRITE_OK_RE.search(text)) and bool(_DFU_LEAVE_NOISE_RE.search(text))
+
+
 def wait_for_dfu(
     *,
     reporter: Reporter = null_reporter,
@@ -277,6 +303,15 @@ def flash_dfu_stm32(
         )
 
     reporter("info", "DFU device found. Flashing via dfu-util...")
+
+    # Keep the output as well as the exit code: dfu-util's own words are the only
+    # way to tell a real failure from the expected one below.
+    transcript: list[str] = []
+
+    def capture(stream: str, line: str) -> None:
+        transcript.append(line)
+        reporter(stream, line)
+
     rc = run_streamed(
         [
             "dfu-util",
@@ -290,12 +325,30 @@ def flash_dfu_stm32(
             "0x08000000:force:mass-erase:leave",
         ],
         cwd=paths.home,
-        reporter=reporter,
+        reporter=capture,
         dry_run=settings.dry_run,
         fake_delay=0.0,
     )
     if rc != 0:
-        raise FlashError(f"dfu-util flashing failed (exit {rc}).", returncode=rc)
+        if _dfu_left_successfully(transcript):
+            # Expected, not a failure. `:leave` asks the STM32 to exit DFU and
+            # start the application it just received, so the device detaches
+            # before dfu-util can read its status one last time - and dfu-util
+            # exits 74 (EX_IOERR) over a request that could not possibly succeed.
+            # The write itself already reported "File downloaded successfully".
+            #
+            # Deliberately not treated as fatal rather than suppressed: the caller
+            # then waits for the board to re-enumerate as Katapult, which is the
+            # real verdict on whether this worked. Raising here aborted *before*
+            # that check, turning a good flash into a reported failure.
+            reporter(
+                "warn",
+                f"dfu-util exited {rc} on its post-'leave' status read. That is "
+                f"expected - the board detached to boot the new firmware. The "
+                f"download itself succeeded.",
+            )
+        else:
+            raise FlashError(f"dfu-util flashing failed (exit {rc}).", returncode=rc)
     reporter("info", "Flash command sent. Device should reboot into Katapult shortly.")
 
 
