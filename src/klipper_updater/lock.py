@@ -84,9 +84,11 @@ class ExclusiveLock:
     surprise, not a convenience.
     """
 
-    def __init__(self, paths: Paths) -> None:
+    def __init__(self, paths: Paths, path: Optional[str] = None) -> None:
         self.paths = paths
-        self.path = paths.lock_file
+        #: Overridable so registry edits can use their own lock file rather than
+        #: queueing behind a build that holds the main one for minutes.
+        self.path = path or paths.lock_file
         self._fh: Optional[Any] = None
         self.label: Optional[str] = None
 

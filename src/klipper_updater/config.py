@@ -1,4 +1,4 @@
-"""The MCU registry: ``~/printer_data/config/mcu-updater/mcu-updater.cfg``.
+﻿"""The MCU registry: ``~/printer_data/config/mcu-updater/mcu-updater.cfg``.
 
 Klipper-style, because it lives next to ``printer.cfg`` and gets hand-edited::
 
@@ -33,9 +33,10 @@ survive the panel editing the file.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any, Optional
 
 from .cfgdoc import CfgDocument, parse_bool
@@ -204,6 +205,32 @@ class Registry:
             legacy=legacy,
             expected=paths.registry_file,
         )
+
+    @classmethod
+    @contextlib.contextmanager
+    def mutate(cls, paths: Paths, label: str) -> Iterator[Registry]:
+        """Load, modify and save as one atomic unit.
+
+        ``with Registry.mutate(paths, "add serial") as reg: reg.add_serial(...)``
+
+        The load happens *inside* the lock, deliberately. `save()` rewrites the
+        whole document, so saving a Registry that was read before someone else's
+        edit erases that edit - and the agent and the CLI are separate processes
+        that both write this file. Re-reading under the lock makes that impossible
+        rather than unlikely.
+
+        Uses its own lock file, so a build or flash holding the main lock for
+        minutes does not block a sub-millisecond registry edit.
+
+        Nothing is written if the body raises, so a validation failure leaves the
+        file exactly as it was.
+        """
+        from .lock import ExclusiveLock
+
+        with ExclusiveLock(paths, path=paths.registry_lock_file).acquire(label):
+            reg = cls.load(paths)
+            yield reg
+            reg.save(paths)
 
     def save(self, paths: Paths) -> None:
         """Atomic write, preserving everything the document already had."""

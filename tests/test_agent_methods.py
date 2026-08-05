@@ -348,3 +348,122 @@ def test_adoptable_respects_the_chipset_filter(api, fake_root):
     make_device(fake_root / "bus", "katapult", "rp2040", "BBBB-if00")
     res = api.dispatch("fw.bus.scan", {"chipset": "rp2040"})
     assert [d["serial"] for d in res["adoptable"]] == ["BBBB-if00"]
+
+
+# --------------------------------------------------------------------------
+# fw.serial.add / fw.serial.remove
+# --------------------------------------------------------------------------
+
+
+def test_serial_add_tracks_the_board_and_announces_it(paths, live_registry_text, fake_root):
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    changes: list[int] = []
+    api = Api(paths, on_change=lambda: changes.append(1))
+    make_device(fake_root / "bus", "katapult", "stm32g0b1xx", "NEWBOARD-if00")
+
+    res = api.dispatch("fw.serial.add", {"name": "bttebb36", "serial": "NEWBOARD-if00"})
+    assert res["added"] is True
+    assert "NEWBOARD-if00" in api.registry().get("bttebb36").serials
+    # Other clients have to learn about it; the bus poll would not tell them,
+    # because the devices on the bus did not change - only who tracks them.
+    assert len(changes) == 1
+
+
+def test_serial_add_is_idempotent(api, fake_root):
+    make_device(fake_root / "bus", "katapult", "stm32g0b1xx", "NEWBOARD-if00")
+    api.dispatch("fw.serial.add", {"name": "bttebb36", "serial": "NEWBOARD-if00"})
+    again = api.dispatch("fw.serial.add", {"name": "bttebb36", "serial": "NEWBOARD-if00"})
+    assert again["added"] is False
+    assert api.registry().get("bttebb36").serials.count("NEWBOARD-if00") == 1
+
+
+def test_serial_add_refuses_a_device_that_is_not_a_board(api, fake_root):
+    """Server-side enforcement of what the panel merely filters. The panel only
+    offers `adoptable` entries, but it is not the only possible caller."""
+    (fake_root / "bus" / "usb-1a86_USB_Serial-if00").write_text("", encoding="utf-8")
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.serial.add", {"name": "bttebb36", "serial": "Serial-if00"})
+    assert exc.value.data["code"] == "not_an_mcu"
+    assert "Serial-if00" not in api.registry().get("bttebb36").serials
+
+
+def test_serial_add_allows_a_board_that_is_not_plugged_in(api):
+    """Pre-registering an absent board is legitimate - you cannot judge what you
+    cannot see, and refusing would block adding a board that is simply off."""
+    res = api.dispatch("fw.serial.add", {"name": "bttebb36", "serial": "ABSENT-if00"})
+    assert res["added"] is True
+
+
+def test_serial_add_refuses_a_serial_tracked_under_another_type(api, fake_root):
+    """One board under two types gets flashed twice with different firmware."""
+    make_device(fake_root / "bus", "Klipper", "stm32g0b1xx", "290055001850304158373620-if00")
+    with pytest.raises(RpcError) as exc:
+        api.dispatch(
+            "fw.serial.add",
+            {"name": "bttmmbv1", "serial": "290055001850304158373620-if00"},
+        )
+    assert exc.value.data["code"] == "serial_tracked_elsewhere"
+    assert "bttebb36" in exc.value.data["data"]["tracked_under"]
+
+
+def test_serial_add_refuses_an_unknown_type(api):
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.serial.add", {"name": "nope", "serial": "X-if00"})
+    assert exc.value.data["code"] == "unknown_type"
+
+
+@pytest.mark.parametrize("method", ["fw.serial.add", "fw.serial.remove"])
+@pytest.mark.parametrize("args", [{}, {"name": "bttebb36"}, {"serial": "X"}, {"name": " ", "serial": "X"}])
+def test_serial_methods_require_both_arguments(api, method, args):
+    with pytest.raises(RpcError) as exc:
+        api.dispatch(method, args)
+    assert exc.value.code == ERR_INVALID_PARAMS
+
+
+def test_serial_remove_reports_whether_it_acted(api):
+    first = api.dispatch(
+        "fw.serial.remove",
+        {"name": "bttebb36", "serial": "290055001850304158373620-if00"},
+    )
+    assert first["removed"] is True
+    again = api.dispatch(
+        "fw.serial.remove",
+        {"name": "bttebb36", "serial": "290055001850304158373620-if00"},
+    )
+    assert again["removed"] is False
+
+
+def test_serial_remove_touches_nothing_but_the_registry(api, paths):
+    """The panel must be able to promise this: untracking is not uninstalling.
+    The board keeps its firmware, the type keeps its config and artifacts."""
+    import os
+
+    os.makedirs(paths.artifact_dir("bttebb36"), exist_ok=True)
+    binary = paths.bin_file("bttebb36", "klipper")
+    with open(binary, "wb") as fh:
+        fh.write(b"\0" * 64)
+    os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)
+    config = paths.config_file("bttebb36", "klipper")
+    with open(config, "w", encoding="utf-8") as fh:
+        fh.write("CONFIG_MACH_STM32=y\n")
+
+    api.dispatch(
+        "fw.serial.remove",
+        {"name": "bttebb36", "serial": "290055001850304158373620-if00"},
+    )
+
+    assert os.path.exists(binary)
+    assert os.path.exists(config)
+    assert "bttebb36" in api.registry().names()  # the type survives its last serial
+
+
+def test_a_mutation_preserves_comments_and_other_sections(api, paths, fake_root):
+    make_device(fake_root / "bus", "katapult", "stm32g0b1xx", "NEWBOARD-if00")
+    api.dispatch("fw.serial.add", {"name": "bttebb36", "serial": "NEWBOARD-if00"})
+
+    with open(paths.main_config, encoding="utf-8") as fh:
+        out = fh.read()
+    assert "# mcu-updater configuration." in out
+    assert "src/Makefile -> src-y += buffer.c" in out
+    assert out.count("[mcu bttebb36]") == 1

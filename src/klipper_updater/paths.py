@@ -112,6 +112,17 @@ class Paths:
         return os.path.join(self.data_dir, ".updater.lock")
 
     @property
+    def registry_lock_file(self) -> str:
+        """Serialises registry writes. Deliberately *not* `lock_file`.
+
+        A registry edit is a sub-millisecond load-modify-write; a build or flash
+        holds `lock_file` for minutes. Sharing one lock would mean "you cannot
+        track a board while a build is running", which is a pointless refusal -
+        they touch different things.
+        """
+        return os.path.join(self.data_dir, ".registry.lock")
+
+    @property
     def journal_file(self) -> str:
         """Records "klipper was stopped by us" so a crashed run can be reconciled."""
         return os.path.join(self.data_dir, ".updater.state")

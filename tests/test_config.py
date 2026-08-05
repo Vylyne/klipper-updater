@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 
 import pytest
 
@@ -342,3 +343,91 @@ def test_the_intermediate_config_dir_is_also_guarded(paths, fake_root):
         Registry.load(paths)
     assert "klipper-updater" in str(exc.value)
     assert "mcu-updater" in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# Registry.mutate - atomic load-modify-write
+# --------------------------------------------------------------------------
+
+
+def test_mutate_reads_inside_the_lock_so_it_cannot_clobber(paths, live_registry_text):
+    """save() rewrites the whole document, so a Registry loaded before someone
+    else's edit would erase it on save. The agent and the CLI are separate
+    processes that both write this file, so mutate() must re-read, not trust a
+    caller's earlier load."""
+    _write(paths, live_registry_text)
+    stale = Registry.load(paths)
+    assert "hexa" not in stale.names()
+
+    # Somebody else adds a type after `stale` was read.
+    other = Registry.load(paths)
+    other.add_type("hexa", "stm32f072xb")
+    other.save(paths)
+
+    with Registry.mutate(paths, "add serial") as reg:
+        reg.add_serial("bttebb36", "LATER-if00")
+
+    final = Registry.load(paths)
+    assert "hexa" in final.names(), "mutate() used stale state and erased a type"
+    assert "LATER-if00" in final.get("bttebb36").serials
+
+
+def test_mutate_writes_nothing_if_the_body_raises(paths, live_registry_text):
+    """A validation failure must leave the file exactly as it was, not half-edited."""
+    _write(paths, live_registry_text)
+    before = _read(paths)
+
+    with pytest.raises(UnknownTypeError):
+        with Registry.mutate(paths, "bad edit") as reg:
+            reg.add_serial("bttebb36", "PARTIAL-if00")
+            reg.get("does-not-exist")  # raises after a mutation was already made
+
+    assert _read(paths) == before
+
+
+def test_mutate_uses_its_own_lock_file(paths):
+    """Registry edits must not queue behind a build holding the main lock for
+    minutes - they touch different things."""
+    assert paths.registry_lock_file != paths.lock_file
+
+    from klipper_updater.lock import exclusive
+
+    with exclusive(paths, "a long build"):
+        with Registry.mutate(paths, "add a serial anyway") as reg:
+            reg.add_type("a", "rp2040")
+    assert "a" in Registry.load(paths).names()
+
+
+def test_mutate_records_who_is_editing(paths, live_registry_text):
+    """Portable half of the locking check: the lock is taken, and labelled."""
+    from klipper_updater.lock import ExclusiveLock
+
+    _write(paths, live_registry_text)
+    with Registry.mutate(paths, "add serial FOO") as reg:
+        reg.add_serial("bttebb36", "FOO-if00")
+        held = ExclusiveLock(paths, path=paths.registry_lock_file)._record()
+        assert held is not None
+        assert held["label"] == "add serial FOO"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="flock is unavailable on Windows; the lock degrades to a no-op there",
+)
+def test_a_concurrent_mutation_is_refused_rather_than_interleaved(paths, live_registry_text):
+    """Two interleaved load-modify-writes lose one of the edits silently, which is
+    the whole failure mode this phase has to avoid. Refusing is the safe answer -
+    the lock is held for sub-milliseconds, so a real collision needs bad luck and
+    the caller can simply retry."""
+    from klipper_updater.errors import BusyError
+
+    _write(paths, live_registry_text)
+    with Registry.mutate(paths, "first") as reg:
+        reg.add_serial("bttebb36", "FIRST-if00")
+        with pytest.raises(BusyError):
+            with Registry.mutate(paths, "second") as other:
+                other.add_serial("bttebb36", "SECOND-if00")
+
+    final = Registry.load(paths)
+    assert "FIRST-if00" in final.get("bttebb36").serials
+    assert "SECOND-if00" not in final.get("bttebb36").serials

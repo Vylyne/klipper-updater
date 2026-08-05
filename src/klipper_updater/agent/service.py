@@ -67,7 +67,16 @@ class Agent:
             on_log_line=self.batcher.add,
             logger=self.log,
         )
-        self.api = Api(paths, call=self._call, runner=self.runner, logger=self.log)
+        self.api = Api(
+            paths,
+            call=self._call,
+            runner=self.runner,
+            logger=self.log,
+            # A registry edit from one browser tab has to reach every other client,
+            # and the bus poll alone would not do it - the devices on the bus have
+            # not changed, only who tracks them.
+            on_change=self.emit_state,
+        )
         self.watcher = BusWatcher(
             paths,
             self.emitter,

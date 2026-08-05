@@ -22,7 +22,7 @@ from .. import API_VERSION, __version__
 from ..build import read_sidecar, staleness
 from ..config import Registry
 from ..devices import BusDevice, device_state, scan
-from ..errors import UpdaterError
+from ..errors import SerialTrackedElsewhereError, UpdaterError
 from ..paths import FW_TARGETS, REENUMERATE_TIMEOUT, Paths
 from ..settings import Settings, load_settings
 from .rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, MethodNotFound, RpcError
@@ -73,8 +73,12 @@ class Api:
         call: Optional[Callable[[str, Any, float], Any]] = None,
         runner: Optional[Any] = None,
         logger: Any = None,
+        on_change: Optional[Callable[[], None]] = None,
     ) -> None:
         self.paths = paths
+        # Called after a mutation so every connected client re-syncs. Injected
+        # rather than reached for, keeping this class free of the transport.
+        self._on_change = on_change
         # Injected so this class never touches the transport directly, which is
         # what makes it testable without a Moonraker.
         self._call = call
@@ -265,6 +269,91 @@ class Api:
 
     def settings_get(self, args: dict) -> dict[str, Any]:
         return {"settings": dataclasses.asdict(self.settings())}
+
+    # -- registry mutation -------------------------------------------------
+
+    def _changed(self) -> None:
+        """Announce a mutation. Never lets a broadcast failure undo a good write.
+
+        The registry is already saved by the time this runs, so raising here would
+        report a failure for something that succeeded - and the client would then
+        show stale state *and* an error.
+        """
+        if self._on_change is None:
+            return
+        try:
+            self._on_change()
+        except Exception as exc:  # noqa: BLE001
+            if self._log is not None:
+                self._log.warning(f"could not emit state after a change: {exc}")
+
+    @staticmethod
+    def _require_str(args: dict, key: str) -> str:
+        value = args.get(key)
+        if not value or not str(value).strip():
+            raise RpcError(f"'{key}' is required", ERR_INVALID_PARAMS)
+        return str(value).strip()
+
+    def serial_add(self, args: dict) -> dict[str, Any]:
+        """Track a physical board under an existing type.
+
+        Touches nothing but the registry: no build, no flash, no board.
+        """
+        name = self._require_str(args, "name")
+        serial = self._require_str(args, "serial")
+
+        # The panel only offers `adoptable` devices, but the panel is not the only
+        # possible caller - enforce the same rule here so a direct RPC cannot add
+        # a Knomi's CH340 as a board. Only refused when we can actually see it:
+        # a serial for a board that is currently unplugged is legitimate.
+        present = next((d for d in scan(self.paths) if d.serial == serial), None)
+        if present is not None and not present.is_mcu:
+            raise RpcError(
+                f"{serial} is on the bus but does not look like a Klipper or Katapult "
+                f"board (it enumerates as '{present.fw}'). Refusing to track it - "
+                f"building firmware for a USB serial adapter cannot end well.",
+                data={
+                    "code": "not_an_mcu",
+                    "message": "device is not a Klipper or Katapult board",
+                    "data": {"serial": serial, "fw": present.fw, "path": present.path},
+                },
+            )
+
+        with Registry.mutate(self.paths, f"add serial {serial}") as reg:
+            mcu = reg.get(name)  # UnknownTypeError if the type doesn't exist
+            # One board tracked under two types would get flashed twice with
+            # different firmware, so this is refused rather than merged.
+            elsewhere = [t for t in reg.find_types_for_serial(serial) if t != name]
+            if elsewhere:
+                raise SerialTrackedElsewhereError(
+                    f"serial '{serial}' is already tracked under '{elsewhere[0]}'. "
+                    f"Remove it from there first if it really belongs to '{name}'.",
+                    serial=serial,
+                    requested=name,
+                    tracked_under=elsewhere,
+                )
+            added = reg.add_serial(name, serial)
+            chipset = mcu.chipset
+
+        self._changed()
+        return {"name": name, "serial": serial, "added": added, "chipset": chipset}
+
+    def serial_remove(self, args: dict) -> dict[str, Any]:
+        """Stop tracking a board.
+
+        Deliberately non-destructive, and the panel should say so: the board keeps
+        its firmware, the type keeps its saved .config and its built artifacts, and
+        re-adding the serial makes it flashable again with nothing to rebuild.
+        """
+        name = self._require_str(args, "name")
+        serial = self._require_str(args, "serial")
+
+        with Registry.mutate(self.paths, f"remove serial {serial}") as reg:
+            reg.get(name)  # UnknownTypeError if the type doesn't exist
+            removed = reg.remove_serial(name, serial)
+
+        self._changed()
+        return {"name": name, "serial": serial, "removed": removed}
 
     # -- jobs --------------------------------------------------------------
 
@@ -649,6 +738,8 @@ class Api:
         "fw.flash": "flash",
         "fw.job.get": "job_get",
         "fw.job.cancel": "job_cancel",
+        "fw.serial.add": "serial_add",
+        "fw.serial.remove": "serial_remove",
     }
 
     #: Registered with Moonraker only when a runner is present, so a read-only
