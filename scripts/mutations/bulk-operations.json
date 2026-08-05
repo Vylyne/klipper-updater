@@ -1,0 +1,38 @@
+{
+  "_comment": "Guards that must stay load-bearing. Run: ./scripts/mutation_test.py scripts/mutations/bulk-operations.json",
+  "file": "src/klipper_updater/agent/methods.py",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "tests/test_agent_bulk.py",
+    "-q"
+  ],
+  "mutations": [
+    {
+      "name": "offline boards are never flashed",
+      "find": "                if state == STATE_OFFLINE:\n                    continue\n",
+      "replace": ""
+    },
+    {
+      "name": "scope 'all' overrides the version judgement",
+      "find": "if scope == \"all\" or info[\"needs_flash\"] is True:",
+      "replace": "if info[\"needs_flash\"] is True:"
+    },
+    {
+      "name": "each board is waited for after its write",
+      "find": "                    if not settings.dry_run:",
+      "replace": "                    if True is False:"
+    },
+    {
+      "name": "update_all re-checks the idle gate after building",
+      "find": "            assert_printer_idle(\n                settings,\n                activity=self._printer_activity,\n                force=bool(args.get(\"force\")),\n                reporter=ctx.reporter,\n            )\n",
+      "replace": ""
+    },
+    {
+      "name": "an unknown scope is refused",
+      "find": "if scope not in self.SCOPES:",
+      "replace": "if False:"
+    }
+  ]
+}

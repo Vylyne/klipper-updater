@@ -125,8 +125,28 @@ every board as stale after you pull Klipper, and a stray `touch` doesn't lie.
 ```bash
 pip install -e ".[dev]"
 pytest -q
-ruff check src tests
+ruff check src tests scripts
 ```
+
+### Checking that a guard is load-bearing
+
+A guard no test exercises is decoration, and a passing suite cannot tell you
+which kind you have. `scripts/mutation_test.py` breaks each one deliberately and
+reports whether the suite noticed:
+
+```bash
+./scripts/mutation_test.py scripts/mutations/bulk-operations.json
+```
+
+`CAUGHT` means removing the guard fails a test, so it is real. `SURVIVED` means
+nothing covers it. The specs under `scripts/mutations/` record the guards that
+matter; `STALE` means an anchor no longer matches the source and the spec needs
+updating, which is not the same as being covered.
+
+It edits files in place, so it restores in a `finally`, verifies the restore by
+hash afterwards, and keeps a backup outside the tree. That is not
+belt-and-braces: an earlier ad-hoc version of this crashed *between* mutating and
+restoring and left a sabotaged guard on disk.
 
 The whole test suite runs on any OS with no printer attached, because every
 filesystem location comes from a `Paths` object that honours these overrides:

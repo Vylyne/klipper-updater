@@ -1,0 +1,43 @@
+{
+  "_comment": "The harness verifying its own safety properties. Every one of these is a way the original ad-hoc script could have left a mutation on disk.",
+  "file": "scripts/mutation_test.py",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "tests/test_mutation_helper.py",
+    "-q"
+  ],
+  "mutations": [
+    {
+      "name": "restore is in a finally, not after the yield",
+      "find": "    try:\n        yield\n    finally:\n",
+      "replace": "    yield\n    if True:\n"
+    },
+    {
+      "name": "finally covers BaseException, not just Exception",
+      "find": "    finally:\n        # Unconditional, and the last thing to touch the file.\n",
+      "replace": "    except Exception:\n        # Unconditional, and the last thing to touch the file.\n"
+    },
+    {
+      "name": "subprocess output is decoded leniently",
+      "find": "(proc.stdout + proc.stderr).decode(\"utf-8\", errors=\"replace\")",
+      "replace": "(proc.stdout + proc.stderr).decode(\"utf-8\", errors=\"strict\")"
+    },
+    {
+      "name": "a stale anchor is refused",
+      "find": "        raise LookupError(f\"anchor not found in {path}: {find!r}\")",
+      "replace": "        pass"
+    },
+    {
+      "name": "the restore is verified afterwards",
+      "find": "        if after != before:",
+      "replace": "        if False:"
+    },
+    {
+      "name": "a red baseline aborts the run",
+      "find": "    if code != 0:\n        print(f\"baseline FAILED",
+      "replace": "    if False:\n        print(f\"baseline FAILED"
+    }
+  ]
+}
