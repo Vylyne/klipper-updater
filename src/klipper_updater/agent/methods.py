@@ -338,6 +338,119 @@ class Api:
         self._changed()
         return {"name": name, "serial": serial, "added": added, "chipset": chipset}
 
+    def type_add(self, args: dict) -> dict[str, Any]:
+        """Register a board model.
+
+        The name is validated by the model, not here - it becomes both a config
+        section and a directory, and the CLI must apply the same rule.
+        """
+        name = self._require_str(args, "name")
+        chipset = self._require_str(args, "chipset")
+        installed = args.get("katapult_installed")
+
+        with Registry.mutate(self.paths, f"add type {name}") as reg:
+            reg.add_type(
+                name,
+                chipset,
+                klipper_args=str(args.get("klipper_extra_args") or "").strip(),
+                katapult_args=str(args.get("katapult_extra_args") or "").strip(),
+                katapult_installed=True if installed is None else bool(installed),
+            )
+
+        self._changed()
+        return {"name": name, "chipset": chipset}
+
+    def type_update(self, args: dict) -> dict[str, Any]:
+        """Edit a type in place. Only the keys supplied are touched.
+
+        Renaming is deliberately not offered. The name is also a directory holding
+        the saved menuconfig answers, so a rename is a filesystem migration rather
+        than a config edit - and the answers are the one thing here that cannot be
+        regenerated.
+        """
+        name = self._require_str(args, "name")
+        if args.get("new_name"):
+            raise RpcError(
+                "renaming a type isn't supported here: the name is also the "
+                "directory holding its saved menuconfig answers. Add a type with "
+                "the new name, move that directory across, then remove the old one.",
+                data={"code": "rename_unsupported", "message": "renaming is a migration"},
+            )
+
+        warnings: list[str] = []
+        with Registry.mutate(self.paths, f"update type {name}") as reg:
+            mcu = reg.get(name)
+
+            if "chipset" in args:
+                chipset = self._require_str(args, "chipset")
+                if chipset != mcu.chipset:
+                    # Staleness compares the source commit and a hash of the
+                    # .config, neither of which changes when the chipset does - so
+                    # a binary built for the old chip would keep reporting itself
+                    # as fresh. Say so rather than let it be flashed.
+                    if self.artifact(name, "klipper").get("has_bin"):
+                        warnings.append(
+                            f"the built firmware for '{name}' was compiled for "
+                            f"{mcu.chipset}. Rebuild before flashing - staleness "
+                            f"cannot detect a chipset change on its own."
+                        )
+                    mcu.chipset = chipset
+
+            for fw in FW_TARGETS:
+                key = f"{fw}_extra_args"
+                if key in args:
+                    mcu.fw(fw).extra_args = str(args.get(key) or "").strip()
+
+            if "katapult_installed" in args:
+                installed = bool(args.get("katapult_installed"))
+                # Only stored when false; absent means true, which keeps the file
+                # free of restated defaults.
+                mcu.fw("katapult").installed = None if installed else False
+
+            result: dict[str, Any] = {"name": name, "chipset": mcu.chipset}
+
+        self._changed()
+        result["warnings"] = warnings
+        return result
+
+    def type_remove(self, args: dict) -> dict[str, Any]:
+        """Stop tracking a board model.
+
+        Removes the registry section and nothing else. The saved menuconfig
+        answers stay on disk, which matters because they are the one thing here
+        that genuinely cannot be regenerated - so re-adding the same name gets
+        everything back.
+
+        Refuses while boards are still tracked under it unless forced: removing a
+        type with live boards is far more often a misclick than an intention.
+        """
+        name = self._require_str(args, "name")
+        force = bool(args.get("force"))
+
+        with Registry.mutate(self.paths, f"remove type {name}") as reg:
+            mcu = reg.get(name)
+            count = len(mcu.serials)
+            if count and not force:
+                raise RpcError(
+                    f"'{name}' still tracks {count} board(s). Remove them first, or "
+                    f"confirm to remove the type and its serials together.",
+                    data={
+                        "code": "type_has_serials",
+                        "message": "type still tracks boards",
+                        "data": {"type": name, "serials": list(mcu.serials)},
+                    },
+                )
+            reg.remove_type(name)
+
+        self._changed()
+        return {
+            "name": name,
+            "removed_serials": count,
+            # The panel promises this, so it is part of the contract rather than
+            # only a comment.
+            "kept_config_dir": self.paths.type_dir(name),
+        }
+
     def serial_remove(self, args: dict) -> dict[str, Any]:
         """Stop tracking a board.
 
@@ -740,6 +853,9 @@ class Api:
         "fw.job.cancel": "job_cancel",
         "fw.serial.add": "serial_add",
         "fw.serial.remove": "serial_remove",
+        "fw.type.add": "type_add",
+        "fw.type.update": "type_update",
+        "fw.type.remove": "type_remove",
     }
 
     #: Registered with Moonraker only when a runner is present, so a read-only

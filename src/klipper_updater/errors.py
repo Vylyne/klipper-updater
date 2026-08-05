@@ -51,6 +51,18 @@ class UnknownTypeError(ConfigError):
     code = "unknown_type"
 
 
+class InvalidTypeNameError(ConfigError):
+    """A type name that cannot safely be used.
+
+    The name is not just a label: it becomes a ``[mcu <name>]`` section header and
+    a directory under both the config and data trees. So a name containing a path
+    separator or ``..`` would write outside them, which matters now that the name
+    can arrive from a browser rather than only from an argument someone typed.
+    """
+
+    code = "invalid_type_name"
+
+
 class DuplicateTypeError(ConfigError):
     code = "duplicate_type"
 

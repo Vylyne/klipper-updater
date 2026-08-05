@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import os
+import re
 from collections.abc import Iterable, Iterator
 from typing import Any, Optional
 
@@ -45,6 +46,7 @@ from .errors import (
     ConfigCorruptError,
     ConfigError,
     DuplicateTypeError,
+    InvalidTypeNameError,
     SerialTrackedElsewhereError,
     UnknownSerialError,
     UnknownTypeError,
@@ -122,6 +124,55 @@ class McuType:
 
 def section_name(mcu_type: str) -> str:
     return f"{SECTION_PREFIX} {mcu_type}"
+
+
+#: A whitelist, not a blacklist. Every real type name is already alphanumeric
+#: (sv08Mainboard, bttebb36, flylllplusbuffer, OctopusMAXEZ, hexa), so nothing is
+#: given up - and a whitelist cannot be outflanked by a separator or an encoding
+#: nobody thought of.
+TYPE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+#: Long enough for any sane board name, short enough to stay a valid path
+#: component on every filesystem.
+TYPE_NAME_MAX = 64
+
+
+def validate_type_name(name: str) -> str:
+    """Check a type name is safe to use as a section header *and* a directory.
+
+    A type name is not just a label. It becomes ``[mcu <name>]`` in the config and
+    a directory under both the config and data trees, via
+    ``os.path.join(config_dir, name)``. So ``../../foo`` would write outside them
+    and ``a]b`` would produce a section header that no longer parses.
+
+    That was only ever reachable by typing it as a CLI argument. It stops being
+    theoretical the moment the panel offers a free-text name field, so this is
+    enforced in the model rather than in either front end - the CLI and the agent
+    then cannot disagree about what is allowed.
+    """
+    stripped = name.strip()
+    if not stripped:
+        raise InvalidTypeNameError("an MCU type name cannot be empty.", type=name)
+    if stripped != name:
+        raise InvalidTypeNameError(
+            f"type name '{name}' has leading or trailing whitespace.", type=name
+        )
+    if len(stripped) > TYPE_NAME_MAX:
+        raise InvalidTypeNameError(
+            f"type name is too long ({len(stripped)} characters, max {TYPE_NAME_MAX}).",
+            type=name,
+        )
+    # Caught by the whitelist too, but named separately so the message says what
+    # is actually wrong rather than listing permitted characters.
+    if stripped in (".", ".."):
+        raise InvalidTypeNameError(f"'{name}' is not a usable name.", type=name)
+    if not TYPE_NAME_RE.match(stripped):
+        raise InvalidTypeNameError(
+            f"type name '{name}' may only contain letters, digits, dot, dash and "
+            f"underscore. It becomes both a config section and a directory name.",
+            type=name,
+        )
+    return stripped
 
 
 class Registry:
@@ -360,6 +411,7 @@ class Registry:
         katapult_installed: bool = True,
         overwrite: bool = False,
     ) -> McuType:
+        validate_type_name(name)
         if name in self.types and not overwrite:
             raise DuplicateTypeError(f"MCU type '{name}' already exists.", type=name)
         mcu = McuType(

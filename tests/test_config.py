@@ -7,12 +7,13 @@ import sys
 import pytest
 
 from klipper_updater.cfgdoc import CfgDocument
-from klipper_updater.config import MakefilePatch, Registry, section_name
+from klipper_updater.config import MakefilePatch, Registry, section_name, validate_type_name
 from klipper_updater.errors import (
     AmbiguousSerialError,
     ConfigCorruptError,
     ConfigError,
     DuplicateTypeError,
+    InvalidTypeNameError,
     SerialTrackedElsewhereError,
     UnknownSerialError,
     UnknownTypeError,
@@ -431,3 +432,44 @@ def test_a_concurrent_mutation_is_refused_rather_than_interleaved(paths, live_re
     final = Registry.load(paths)
     assert "FIRST-if00" in final.get("bttebb36").serials
     assert "SECOND-if00" not in final.get("bttebb36").serials
+
+
+# --------------------------------------------------------------------------
+# validate_type_name - the name is also a path component
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["hexa", "sv08Mainboard", "btt-ebb36", "a.b_c", "OctopusMAXEZ"])
+def test_real_type_names_are_accepted(name):
+    assert validate_type_name(name) == name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../../etc",  # traversal out of the config tree
+        "foo/bar",
+        "foo\bar",
+        "..",
+        ".",
+        "a]b",  # would produce a section header that no longer parses
+        "[mcu x",
+        "with space",
+        " lead",
+        "trail ",
+        "",
+        "   ",
+        "x" * 65,
+    ],
+)
+def test_unsafe_type_names_are_refused(name):
+    with pytest.raises(InvalidTypeNameError):
+        validate_type_name(name)
+
+
+def test_add_type_applies_the_rule_so_both_front_ends_agree(paths):
+    """Enforced in the model rather than in the CLI and the agent separately."""
+    reg = Registry.load(paths)
+    with pytest.raises(InvalidTypeNameError):
+        reg.add_type("../escape", "rp2040")
+    assert reg.names() == []

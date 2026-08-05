@@ -467,3 +467,144 @@ def test_a_mutation_preserves_comments_and_other_sections(api, paths, fake_root)
     assert "# mcu-updater configuration." in out
     assert "src/Makefile -> src-y += buffer.c" in out
     assert out.count("[mcu bttebb36]") == 1
+
+
+# --------------------------------------------------------------------------
+# fw.type.add / update / remove
+# --------------------------------------------------------------------------
+
+
+def test_type_add_registers_a_model(paths, live_registry_text, fake_root):
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    changes: list[int] = []
+    api = Api(paths, on_change=lambda: changes.append(1))
+
+    res = api.dispatch("fw.type.add", {"name": "hexa", "chipset": "stm32f072xb"})
+    assert res == {"name": "hexa", "chipset": "stm32f072xb"}
+    assert api.registry().get("hexa").chipset == "stm32f072xb"
+    assert len(changes) == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../../etc", "foo/bar", "foo\bar", "..", ".", "a]b", "[mcu x", "with space"],
+)
+def test_type_add_refuses_a_name_that_is_unsafe_as_a_path(api, name):
+    """The name becomes a directory under both the config and data trees, so a
+    separator or .. would write outside them. Only reachable from a CLI argument
+    until the panel grew a free-text name field."""
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.type.add", {"name": name, "chipset": "stm32f072xb"})
+    assert exc.value.data["code"] == "invalid_type_name"
+    assert name not in api.registry().names()
+
+
+@pytest.mark.parametrize(("sent", "stored"), [(" hexa", "hexa"), ("hexa ", "hexa")])
+def test_type_add_normalises_surrounding_whitespace(api, sent, stored):
+    """A stray space from a form field is normalised rather than refused - the
+    model rejects an unstripped name, but the agent has already trimmed it, which
+    is the friendlier half of the same rule."""
+    res = api.dispatch("fw.type.add", {"name": sent, "chipset": "stm32f072xb"})
+    assert res["name"] == stored
+    assert stored in api.registry().names()
+
+
+def test_type_add_refuses_a_duplicate(api):
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.type.add", {"name": "bttebb36", "chipset": "stm32g0b1xx"})
+    assert exc.value.data["code"] == "duplicate_type"
+
+
+def test_type_add_requires_a_chipset(api):
+    """Without one, no board could ever be matched on the bus."""
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.type.add", {"name": "newtype"})
+    assert exc.value.code == ERR_INVALID_PARAMS
+
+
+def test_type_update_touches_only_what_was_sent(api):
+    before = api.dispatch("fw.type.list")["types"]
+    ebb = next(t for t in before if t["name"] == "bttebb36")
+
+    api.dispatch("fw.type.update", {"name": "bttebb36", "klipper_extra_args": "-j2"})
+
+    after = next(t for t in api.dispatch("fw.type.list")["types"] if t["name"] == "bttebb36")
+    assert after["klipper"]["extra_args"] == "-j2"
+    assert after["chipset"] == ebb["chipset"]
+    assert [s["serial"] for s in after["serials"]] == [s["serial"] for s in ebb["serials"]]
+
+
+def test_type_update_can_clear_katapult_installed(api):
+    api.dispatch("fw.type.update", {"name": "bttebb36", "katapult_installed": False})
+    assert api.registry().get("bttebb36").katapult_installed is False
+    api.dispatch("fw.type.update", {"name": "bttebb36", "katapult_installed": True})
+    assert api.registry().get("bttebb36").katapult_installed is True
+
+
+def test_type_update_warns_when_a_chipset_change_orphans_a_binary(api, paths):
+    """Staleness compares the source commit and a hash of the .config - neither
+    changes when the chipset does, so an old binary would keep reporting itself
+    fresh and get flashed onto a different chip."""
+    import os
+
+    os.makedirs(paths.artifact_dir("bttebb36"), exist_ok=True)
+    with open(paths.bin_file("bttebb36", "klipper"), "wb") as fh:
+        fh.write(b"\0" * 64)
+
+    res = api.dispatch("fw.type.update", {"name": "bttebb36", "chipset": "stm32f446xx"})
+    assert res["chipset"] == "stm32f446xx"
+    assert any("Rebuild before flashing" in w for w in res["warnings"])
+
+
+def test_type_update_does_not_warn_when_there_is_nothing_built(api):
+    res = api.dispatch("fw.type.update", {"name": "bttebb36", "chipset": "stm32f446xx"})
+    assert res["warnings"] == []
+
+
+def test_type_update_refuses_a_rename(api):
+    """A rename is a filesystem migration, not a config edit: the name is also the
+    directory holding the saved menuconfig answers."""
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.type.update", {"name": "bttebb36", "new_name": "something"})
+    assert exc.value.data["code"] == "rename_unsupported"
+
+
+def test_type_remove_refuses_while_boards_are_tracked(api):
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.type.remove", {"name": "bttebb36"})
+    assert exc.value.data["code"] == "type_has_serials"
+    assert len(exc.value.data["data"]["serials"]) == 2
+    assert "bttebb36" in api.registry().names()
+
+
+def test_type_remove_with_force_removes_it(api):
+    res = api.dispatch("fw.type.remove", {"name": "bttebb36", "force": True})
+    assert res["removed_serials"] == 2
+    assert "bttebb36" not in api.registry().names()
+
+
+def test_type_remove_keeps_the_saved_menuconfig_answers(api, paths):
+    """The one thing here that genuinely cannot be regenerated. Removing a type
+    must not delete it, so re-adding the same name gets everything back."""
+    import os
+
+    os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)
+    config = paths.config_file("bttebb36", "klipper")
+    with open(config, "w", encoding="utf-8") as fh:
+        fh.write("CONFIG_MACH_STM32=y\n")
+
+    res = api.dispatch("fw.type.remove", {"name": "bttebb36", "force": True})
+
+    assert os.path.exists(config), "removing a type deleted its menuconfig answers"
+    assert res["kept_config_dir"] == paths.type_dir("bttebb36")
+
+    # ...and re-adding recovers it.
+    api.dispatch("fw.type.add", {"name": "bttebb36", "chipset": "stm32g0b1xx"})
+    assert api.dispatch("fw.artifacts", {"name": "bttebb36"})["klipper"]["has_config"] is True
+
+
+def test_type_remove_refuses_an_unknown_type(api):
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.type.remove", {"name": "nope"})
+    assert exc.value.data["code"] == "unknown_type"
