@@ -7,6 +7,10 @@ two from drifting apart, so it asserts on keys, not just on "it didn't crash".
 
 from __future__ import annotations
 
+import os
+import pathlib
+import sys
+
 import pytest
 
 from klipper_updater import API_VERSION
@@ -14,7 +18,7 @@ from klipper_updater.agent.methods import Api
 from klipper_updater.agent.rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcError
 from klipper_updater.settings import Settings
 
-from .conftest import make_device
+from .conftest import make_device, write_settings
 
 
 @pytest.fixture
@@ -714,3 +718,274 @@ def test_enabling_flashing_makes_fw_flash_appear(paths, live_registry_text):
 
     api.dispatch("fw.settings.set", {"settings": {"enable_flashing": True}})
     assert "fw.flash" in api.dispatch("fw.ping")["capabilities"]
+
+
+# --------------------------------------------------------------------------
+# fw.kconfig.*
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def kapi(paths, live_registry_text, fake_root):
+    """An Api on a host whose klipper and katapult trees both parse."""
+    import shutil
+
+    fixtures = pathlib.Path(__file__).resolve().parent / "fixtures"
+    for fw in ("klipper", "katapult"):
+        tree = fake_root / fw
+        (tree / "src").mkdir(parents=True, exist_ok=True)
+        (tree / "lib" / "kconfiglib").mkdir(parents=True, exist_ok=True)
+        shutil.copy(fixtures / "kconfiglib" / "kconfiglib.py", tree / "lib" / "kconfiglib")
+        shutil.copy(fixtures / "kconfig_tree" / "Kconfig", tree / "src" / "Kconfig")
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    return Api(paths)
+
+
+def open_session(kapi, name="bttebb36", fw="klipper"):
+    return kapi.dispatch("fw.kconfig.open", {"name": name, "fw": fw})
+
+
+def test_status_reports_which_trees_can_be_configured(kapi):
+    """So the panel hides the button rather than offering one that fails on a host
+    with no source tree."""
+    assert kapi.dispatch("fw.status")["kconfig_available"] == {
+        "klipper": True,
+        "katapult": True,
+    }
+
+
+def test_a_missing_source_tree_is_reported_as_unavailable(api):
+    """The plain `api` fixture has empty klipper/katapult dirs and no kconfiglib."""
+    available = api.dispatch("fw.status")["kconfig_available"]
+    assert available == {"klipper": False, "katapult": False}
+
+
+def test_open_returns_a_session_and_the_top_menu(kapi):
+    res = open_session(kapi)
+    assert res["session"].startswith("kc-")
+    assert res["dirty"] is False
+    assert len(res["breadcrumb"]) == 1
+    assert any(n["kind"] == "choice" for n in res["nodes"])
+    assert res["available"]["klipper"] is True
+
+
+def test_open_refuses_an_unknown_type(kapi):
+    """The answers are saved per type, so inventing a directory for a typo would
+    not be helpful."""
+    with pytest.raises(RpcError) as exc:
+        kapi.dispatch("fw.kconfig.open", {"name": "nope", "fw": "klipper"})
+    assert exc.value.data["code"] == "unknown_type"
+
+
+@pytest.mark.parametrize("fw", ["", "nonsense", "Klipper"])
+def test_open_refuses_an_unknown_firmware(kapi, fw):
+    with pytest.raises(RpcError) as exc:
+        kapi.dispatch("fw.kconfig.open", {"name": "bttebb36", "fw": fw})
+    assert exc.value.code == ERR_INVALID_PARAMS
+
+
+def test_open_refuses_while_another_session_has_unsaved_changes(kapi):
+    """Two sessions on one target means one save silently discards the other's
+    work, so this is refused rather than allowed and hoped about."""
+    first = open_session(kapi)
+    kapi.dispatch(
+        "fw.kconfig.set",
+        {"session": first["session"], "id": "BOARD_NAME", "value": "editing"},
+    )
+
+    with pytest.raises(RpcError) as exc:
+        open_session(kapi)
+    assert exc.value.data["code"] == "kconfig_session_conflict"
+    assert exc.value.data["data"]["session"] == first["session"]
+
+
+def test_force_takes_over_from_a_dirty_session(kapi):
+    first = open_session(kapi)
+    kapi.dispatch(
+        "fw.kconfig.set",
+        {"session": first["session"], "id": "BOARD_NAME", "value": "editing"},
+    )
+    second = kapi.dispatch(
+        "fw.kconfig.open", {"name": "bttebb36", "fw": "klipper", "force": True}
+    )
+    assert second["session"] != first["session"]
+
+
+def test_a_clean_session_is_not_a_conflict(kapi):
+    """Only unsaved work is worth protecting; two read-only tabs are fine."""
+    open_session(kapi)
+    assert open_session(kapi)["session"].startswith("kc-")
+
+
+def test_navigation_round_trips(kapi):
+    res = open_session(kapi)
+    sid = res["session"]
+    menu_id = next(n["id"] for n in res["nodes"] if n["kind"] == "menu")
+
+    inside = kapi.dispatch("fw.kconfig.enter", {"session": sid, "id": menu_id})
+    assert len(inside["breadcrumb"]) == 2
+    assert len(kapi.dispatch("fw.kconfig.up", {"session": sid})["breadcrumb"]) == 1
+
+
+def test_menu_refetches_the_current_screen(kapi):
+    sid = open_session(kapi)["session"]
+    assert kapi.dispatch("fw.kconfig.menu", {"session": sid})["revision"] == 0
+
+
+def test_set_returns_the_whole_menu_and_what_changed(kapi):
+    res = open_session(kapi)
+    sid = res["session"]
+    choice = next(n for n in res["nodes"] if n["kind"] == "choice")
+
+    after = kapi.dispatch(
+        "fw.kconfig.set", {"session": sid, "id": choice["id"], "value": "MACH_RP2040"}
+    )
+    assert "MACH_RP2040" in after["changed"]
+    assert after["dirty"] is True
+    assert "RP2040_FLASH_SIZE" in [n["name"] for n in after["nodes"]]
+
+
+def test_set_requires_a_value_even_an_empty_one_must_be_explicit(kapi):
+    sid = open_session(kapi)["session"]
+    with pytest.raises(RpcError) as exc:
+        kapi.dispatch("fw.kconfig.set", {"session": sid, "id": "BOARD_NAME"})
+    assert exc.value.code == ERR_INVALID_PARAMS
+
+
+def test_a_refused_value_surfaces_as_a_kconfig_error_with_its_code(kapi):
+    sid = open_session(kapi)["session"]
+    with pytest.raises(RpcError) as exc:
+        kapi.dispatch(
+            "fw.kconfig.set", {"session": sid, "id": "STM32_CLOCK_REF", "value": "99"}
+        )
+    assert exc.value.data["code"] == "kconfig"
+    assert "range" in exc.value.data["message"]
+
+
+def test_help_and_search(kapi):
+    sid = open_session(kapi)["session"]
+    assert "help text" in kapi.dispatch(
+        "fw.kconfig.help", {"session": sid, "id": "WITH_HELP"}
+    )["help"]
+    found = kapi.dispatch("fw.kconfig.search", {"session": sid, "query": "crystal"})
+    assert "STM32_CLOCK_REF" in [n["name"] for n in found["nodes"]]
+
+
+def test_reset_discards_unsaved_edits(kapi):
+    sid = open_session(kapi)["session"]
+    kapi.dispatch("fw.kconfig.set", {"session": sid, "id": "BOARD_NAME", "value": "x"})
+    after = kapi.dispatch("fw.kconfig.reset", {"session": sid})
+    assert after["dirty"] is False
+    assert next(n["value"] for n in after["nodes"] if n["name"] == "BOARD_NAME") == "testboard"
+
+
+def test_save_writes_the_config_and_announces_it(paths, live_registry_text, fake_root):
+    import shutil
+
+    fixtures = pathlib.Path(__file__).resolve().parent / "fixtures"
+    tree = fake_root / "klipper"
+    (tree / "src").mkdir(parents=True, exist_ok=True)
+    (tree / "lib" / "kconfiglib").mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixtures / "kconfiglib" / "kconfiglib.py", tree / "lib" / "kconfiglib")
+    shutil.copy(fixtures / "kconfig_tree" / "Kconfig", tree / "src" / "Kconfig")
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+
+    changes: list[int] = []
+    kapi = Api(paths, on_change=lambda: changes.append(1))
+    sid = kapi.dispatch("fw.kconfig.open", {"name": "bttebb36", "fw": "klipper"})["session"]
+    kapi.dispatch("fw.kconfig.set", {"session": sid, "id": "BOARD_NAME", "value": "saved"})
+
+    res = kapi.dispatch("fw.kconfig.save", {"session": sid})
+    assert os.path.isfile(res["path"])
+    assert res["menu"]["dirty"] is False
+    # The panel's artifact view changes when a config is written, so clients need
+    # telling - staleness is computed from a hash of this file.
+    assert len(changes) == 1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="flock is a no-op on Windows, so the lock cannot refuse there",
+)
+def test_save_refuses_while_a_build_holds_the_lock(kapi, paths):
+    """Not the registry lock - the build lock, because this genuinely conflicts.
+    build() hashes the .config to record what a binary was compiled from, so
+    changing it underneath would leave provenance that does not match the artifact
+    and staleness would report a wrong binary as fresh."""
+    from klipper_updater.errors import BusyError
+    from klipper_updater.lock import exclusive
+
+    sid = open_session(kapi)["session"]
+    kapi.dispatch("fw.kconfig.set", {"session": sid, "id": "BOARD_NAME", "value": "x"})
+
+    with exclusive(paths, "a build"):
+        with pytest.raises(RpcError) as exc:
+            kapi.dispatch("fw.kconfig.save", {"session": sid})
+    assert exc.value.data["code"] == BusyError.code
+
+    # The edit survived the refusal, so nothing was lost by trying.
+    assert kapi.dispatch("fw.kconfig.menu", {"session": sid})["dirty"] is True
+
+
+def test_save_and_build_starts_a_job(paths, live_registry_text, fake_root):
+    import shutil
+
+    from klipper_updater.jobs import JobRunner
+
+    fixtures = pathlib.Path(__file__).resolve().parent / "fixtures"
+    tree = fake_root / "klipper"
+    (tree / "src").mkdir(parents=True, exist_ok=True)
+    (tree / "lib" / "kconfiglib").mkdir(parents=True, exist_ok=True)
+    shutil.copy(fixtures / "kconfiglib" / "kconfiglib.py", tree / "lib" / "kconfiglib")
+    shutil.copy(fixtures / "kconfig_tree" / "Kconfig", tree / "src" / "Kconfig")
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    write_settings(paths, dry_run="true", service_backend="null")
+
+    kapi = Api(paths)
+    kapi.runner = JobRunner(paths, kapi.settings)
+    sid = kapi.dispatch("fw.kconfig.open", {"name": "bttebb36", "fw": "klipper"})["session"]
+    kapi.dispatch("fw.kconfig.set", {"session": sid, "id": "BOARD_NAME", "value": "built"})
+
+    res = kapi.dispatch("fw.kconfig.save", {"session": sid, "build": True})
+    assert res["job_id"]
+    assert kapi.runner.wait(timeout=30), "the dry-run build should finish quickly"
+
+
+def test_close_frees_the_session(kapi):
+    sid = open_session(kapi)["session"]
+    assert kapi.dispatch("fw.kconfig.close", {"session": sid})["closed"] is True
+    with pytest.raises(RpcError) as exc:
+        kapi.dispatch("fw.kconfig.menu", {"session": sid})
+    assert "expired" in exc.value.data["message"]
+
+
+def test_every_method_needs_a_session_id(kapi):
+    for method in (
+        "fw.kconfig.menu",
+        "fw.kconfig.up",
+        "fw.kconfig.reset",
+        "fw.kconfig.save",
+        "fw.kconfig.close",
+    ):
+        with pytest.raises(RpcError) as exc:
+            kapi.dispatch(method, {})
+        assert exc.value.code == ERR_INVALID_PARAMS, method
+
+
+def test_klipper_and_katapult_are_configured_independently(kapi):
+    k = open_session(kapi, fw="klipper")
+    b = open_session(kapi, fw="katapult")
+    assert k["session"] != b["session"]
+    assert k["fw"] == "klipper"
+    assert b["fw"] == "katapult"
+
+    kapi.dispatch("fw.kconfig.set", {"session": k["session"], "id": "BOARD_NAME", "value": "kl"})
+    kapi.dispatch("fw.kconfig.save", {"session": k["session"]})
+    kapi.dispatch("fw.kconfig.set", {"session": b["session"], "id": "BOARD_NAME", "value": "ka"})
+    kapi.dispatch("fw.kconfig.save", {"session": b["session"]})
+
+    arts = kapi.dispatch("fw.artifacts", {"name": "bttebb36"})
+    assert arts["klipper"]["has_config"] and arts["katapult"]["has_config"]

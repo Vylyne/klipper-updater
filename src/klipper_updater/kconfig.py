@@ -417,6 +417,11 @@ class KconfigSession:
         #: Bumped on every change, so a client can tell cached menus are stale.
         self.revision = 0
 
+        #: Held around every operation on this session. The agent serves requests
+        #: from a worker pool, so two calls on one session could otherwise
+        #: interleave halfway through an assignment and its dependency propagation.
+        self.lock = threading.Lock()
+
         self._module = load_kconfiglib(self.fw_dir)
         self.serializer = Serializer(self._module)
         self._kconf = self._parse()
