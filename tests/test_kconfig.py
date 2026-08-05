@@ -652,3 +652,56 @@ def test_same_value_normalises_only_where_it_should(kind, requested, actual, sam
     from klipper_updater.kconfig import _same_value
 
     assert _same_value(kind, requested, actual) is same
+
+
+# --------------------------------------------------------------------------
+# enterable - what is a screen and what is a control
+#
+# The first real Katapult tree exposed both of these. Nothing here was covered
+# before: the tests asserted a menu *is* enterable and never that anything is not.
+# --------------------------------------------------------------------------
+
+
+def test_a_choice_is_not_enterable(session):
+    """Descending into a choice showed its raw option symbols as individual
+    switches. Each one is correctly unsettable on its own - you set the choice, not
+    the option - so the screen was three padlocked toggles and no way to change
+    anything."""
+    assert choice_row(session)["enterable"] is False
+
+
+def test_a_choices_options_are_not_listed_as_rows(session):
+    """They are the choice's `assignable`. Listing them as rows would show each as
+    its own locked control alongside the select that actually works."""
+    names = [n["name"] for n in session.menu()["nodes"]]
+    assert "MACH_STM32" not in names
+    assert "MACH_RP2040" not in names
+    assert choice_row(session)["assignable"] == ["MACH_STM32", "MACH_RP2040"]
+
+
+def test_a_symbol_with_an_implicit_submenu_is_not_enterable(session):
+    """Its children are flattened into this screen at depth+1, so offering to enter
+    it as well would show the same rows twice in two places."""
+    menu_id = next(n["id"] for n in session.menu()["nodes"] if n["prompt"] == "Communication interface")
+    rows = {n["name"]: n for n in session.enter(menu_id)["nodes"] if n["name"]}
+
+    assert rows["USBSERIAL"]["enterable"] is False
+    assert rows["USB_VENDOR_ID"]["depth"] == rows["USBSERIAL"]["depth"] + 1
+
+
+def test_a_menuconfig_symbol_is_its_own_screen(session):
+    """The one symbol kind that is enterable: it is both a value and a menu."""
+    advanced = row(session, "ADVANCED")
+    assert advanced["enterable"] is True
+    assert advanced["kind"] == "bool"
+
+    # Its children live behind it, not inline.
+    assert "ADVANCED_TWEAK" not in [n["name"] for n in session.menu()["nodes"] if n["name"]]
+    session.set_value("ADVANCED", "y")
+    inside = session.enter(row(session, "ADVANCED")["id"])
+    assert "ADVANCED_TWEAK" in [n["name"] for n in inside["nodes"] if n["name"]]
+
+
+def test_entering_a_choice_is_refused(session):
+    with pytest.raises(KconfigError):
+        session.enter(choice_row(session)["id"])

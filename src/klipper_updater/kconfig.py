@@ -202,13 +202,28 @@ class Serializer:
     def enterable(self, node: Any) -> bool:
         """Whether the panel should offer to descend into this node.
 
-        A menu always is. A ``menuconfig`` symbol is when it has children. A plain
-        symbol with an implicit dependency submenu is too - which is why this asks
-        about children rather than about `is_menuconfig`.
+        Only a menu, or a ``menuconfig`` symbol that has children. Asking merely
+        "does it have children?" was wrong twice over, and both showed up the first
+        time this met a real Katapult tree:
+
+        **A choice has children - its options.** Treating it as enterable meant the
+        architecture choice rendered as a folder to click into rather than as a
+        select, and descending showed the raw option symbols as individual
+        switches. Every one of those is correctly unsettable on its own (you set
+        the choice, not the option), so the screen was three padlocked toggles and
+        no way to change anything.
+
+        **A plain symbol's implicit dependency submenu is flattened inline**, at
+        depth+1, the way menuconfig shows it. So offering to enter it as well would
+        show the same children twice, in two different places.
         """
         if self.is_menu(node):
             return True
-        return bool(node.list) and not self.is_comment(node)
+        # Checked before is_menuconfig, which kconfiglib also sets on a Choice
+        # because it renders menu-like. That is what let choices be entered.
+        if self.is_choice(node):
+            return False
+        return bool(getattr(node, "is_menuconfig", False)) and bool(node.list)
 
     # -- values ------------------------------------------------------------
 
@@ -357,7 +372,15 @@ class Serializer:
                 rows.append(self.node(node, depth))
                 # Descend only into implicit submenus. A real menu or a
                 # menuconfig is its own screen, reached by `enterable`.
-                if node.list and not self.is_menu(node) and not node.is_menuconfig:
+                # Implicit dependency submenus only. A menu and a menuconfig
+                # are their own screens; a choice is represented by its
+                # options, not by rows of them.
+                if (
+                    node.list
+                    and not self.is_menu(node)
+                    and not node.is_menuconfig
+                    and not self.is_choice(node)
+                ):
                     self._collect(node.list, depth + 1, rows)
             node = node.next
 

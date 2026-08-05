@@ -68,6 +68,17 @@ config RP2040_BOOT_DELAY
 
 endmenu
 
+# A menuconfig: a symbol that is also its own screen. Distinct from a plain
+# symbol with an implicit dependency submenu, which is flattened inline instead -
+# and the distinction is the whole of `enterable`.
+menuconfig ADVANCED
+    bool "Advanced options"
+
+config ADVANCED_TWEAK
+    int "A tweak"
+    default 1
+    depends on ADVANCED
+
 config BOARD_NAME
     string "Board display name"
     default "testboard"
