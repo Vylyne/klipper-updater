@@ -41,11 +41,13 @@ import hashlib
 import importlib.util
 import os
 import threading
+import time
 from collections.abc import Iterator
 from types import ModuleType
 from typing import Any, Optional
 
 from .errors import KconfigError
+from .paths import Paths
 
 #: Where each firmware tree keeps the copy of kconfiglib it expects to be used.
 VENDORED_KCONFIGLIB = os.path.join("lib", "kconfiglib", "kconfiglib.py")
@@ -231,10 +233,36 @@ class Serializer:
             return []
         item = node.item
         kind = self.kind(node)
-        if kind in ("bool", "tristate", "choice"):
+        if kind == "choice":
+            # A choice's own `assignable` is about whether the choice is *enabled*
+            # - it reads ('y',) for any ordinary mandatory choice. What a caller
+            # actually needs is which option can be picked, and those are the
+            # children. Reporting the tri-values here made every choice look
+            # unchangeable, because there was only ever one of them.
+            return self.choice_options(node)
+        if kind in ("bool", "tristate"):
             return [self._m.TRI_TO_STR[v] for v in sorted(getattr(item, "assignable", ()))]
         # A string, int or hex is editable whenever it is visible.
         return ["<value>"] if getattr(item, "visibility", 0) > 0 else []
+
+    def choice_options(self, node: Any) -> list[str]:
+        """The selectable option names of a choice, in declaration order.
+
+        Only the visible ones: an option whose own dependencies are unmet is not a
+        thing the user can pick, and offering it would produce a radio button that
+        refuses to take.
+        """
+        out = []
+        child = node.list
+        while child:
+            if (
+                self.is_symbol(child)
+                and getattr(child.item, "name", None)
+                and child.item.visibility > 0
+            ):
+                out.append(child.item.name)
+            child = child.next
+        return out
 
     def editable(self, node: Any) -> bool:
         """Whether changing this would actually do anything.
@@ -341,3 +369,447 @@ def help_for(node: Any) -> str:
     without it, and almost none of it is ever read.
     """
     return (getattr(node, "help", None) or "").strip()
+
+
+# --------------------------------------------------------------------------
+# editing
+# --------------------------------------------------------------------------
+
+#: kconfiglib's own return value is not enough to tell whether an assignment took.
+#: `set_value("99")` on an `int` with `range 4 32` returns **True** and silently
+#: leaves the symbol at its default. So every write is verified by reading the
+#: value back, which also catches anything else the library declines quietly.
+def _same_value(kind: str, requested: str, actual: str) -> bool:
+    if kind == "hex":
+        try:
+            return int(requested, 16) == int(actual, 16)
+        except ValueError:
+            return requested.strip().lower() == actual.strip().lower()
+    if kind == "int":
+        try:
+            return int(requested) == int(actual)
+        except ValueError:
+            return requested.strip() == actual.strip()
+    return requested.strip() == actual.strip()
+
+
+class KconfigSession:
+    """One open configuration, navigated a menu at a time.
+
+    Holds a parsed tree plus where the user currently is in it. Sessions exist
+    because a parse costs a noticeable fraction of a second on a Pi and the panel
+    makes many small calls against the same tree.
+
+    Keyed by an opaque id rather than by (type, fw) so two browser tabs cannot end
+    up sharing one Kconfig object and overwriting each other's edits.
+    """
+
+    def __init__(self, session_id: str, paths: Paths, mcu_type: str, fw: str) -> None:
+        self.id = session_id
+        self.paths = paths
+        self.mcu_type = mcu_type
+        self.fw = fw
+        self.fw_dir = paths.fw_dir(fw)
+        self.config_path = paths.config_file(mcu_type, fw)
+        self.dirty = False
+        self.created = time.time()
+        self.touched = self.created
+        #: Bumped on every change, so a client can tell cached menus are stale.
+        self.revision = 0
+
+        self._module = load_kconfiglib(self.fw_dir)
+        self.serializer = Serializer(self._module)
+        self._kconf = self._parse()
+        #: Root-to-here as MenuNodes; the first entry is always the top menu.
+        self._path: list[Any] = [self._kconf.top_node]
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def _parse(self) -> Any:
+        rel = os.path.join("src", "Kconfig")
+        if not os.path.isfile(os.path.join(self.fw_dir, rel)):
+            raise KconfigError(
+                f"no {rel} in {self.fw_dir}. Is that a firmware source tree?",
+                path=self.fw_dir,
+            )
+        with _srctree(self.fw_dir):
+            try:
+                kconf = self._module.Kconfig(rel, warn_to_stderr=False)
+            except Exception as exc:  # noqa: BLE001 - a parse failure is fatal here
+                raise KconfigError(
+                    f"could not parse {rel} in {self.fw_dir}: {exc}", path=self.fw_dir
+                ) from exc
+
+        # A missing config file is normal, not an error: it means this type has
+        # never been configured and the Kconfig defaults are the right place to
+        # start from.
+        if os.path.isfile(self.config_path):
+            try:
+                kconf.load_config(self.config_path)
+            except Exception as exc:  # noqa: BLE001
+                raise KconfigError(
+                    f"could not read {self.config_path}: {exc}", path=self.config_path
+                ) from exc
+        return kconf
+
+    def touch(self) -> None:
+        self.touched = time.time()
+
+    @property
+    def age(self) -> float:
+        return time.time() - self.touched
+
+    # -- navigation --------------------------------------------------------
+
+    @property
+    def current(self) -> Any:
+        return self._path[-1]
+
+    def breadcrumb(self) -> list[dict[str, str]]:
+        out = []
+        for node in self._path:
+            if node.prompt:
+                prompt = node.prompt[0]
+            else:
+                prompt = self._kconf.mainmenu_text or "Configuration"
+            out.append({"id": self.serializer.node_id(node), "prompt": prompt})
+        return out
+
+    def menu(self) -> dict[str, Any]:
+        """The current screen: where we are, and what is on it."""
+        self.touch()
+        return {
+            "session": self.id,
+            "revision": self.revision,
+            "type": self.mcu_type,
+            "fw": self.fw,
+            "dirty": self.dirty,
+            "breadcrumb": self.breadcrumb(),
+            "nodes": self.serializer.menu(self.current.list),
+        }
+
+    def _find(self, node_id: str) -> Any:
+        """Locate a node by the id the panel was handed.
+
+        Searched across the whole tree rather than the current menu, because a
+        `set` can move or hide the node a client is talking about.
+        """
+        for node in _walk(self._kconf.top_node.list):
+            if self.serializer.node_id(node) == node_id:
+                return node
+        raise KconfigError(f"no such config entry: {node_id}", node=node_id)
+
+    def enter(self, node_id: str) -> dict[str, Any]:
+        node = self._find(node_id)
+        if not self.serializer.enterable(node):
+            raise KconfigError(f"{node_id} has nothing to enter", node=node_id)
+        self._path.append(node)
+        return self.menu()
+
+    def up(self) -> dict[str, Any]:
+        if len(self._path) > 1:
+            self._path.pop()
+        return self.menu()
+
+    def _reanchor(self) -> None:
+        """Drop any part of the path a change has made invisible.
+
+        Flipping a choice can make the menu the user is standing in vanish. Falling
+        back to the nearest ancestor that still exists is what menuconfig does, and
+        beats rendering an empty screen with no way out of it.
+        """
+        while len(self._path) > 1 and not self.serializer.visible(self.current):
+            self._path.pop()
+
+    # -- editing -----------------------------------------------------------
+
+    def set_value(self, node_id: str, value: str) -> dict[str, Any]:
+        """Assign one symbol, then prove the assignment took.
+
+        Returns the whole current menu plus the names whose value or visibility
+        moved. A structural delta was considered and rejected: flipping
+        MACH_STM32 to MACH_RP2040 replaces essentially the entire tree, so any
+        delta encoding degenerates to "replace everything" in exactly the common
+        case, while needing a tree-patcher in TypeScript to consume it.
+        """
+        node = self._find(node_id)
+        kind = self.serializer.kind(node)
+        if kind in ("menu", "comment", "unknown"):
+            raise KconfigError(f"{node_id} is not something with a value", node=node_id)
+        if not self.serializer.editable(node):
+            # An option inside a choice is not set directly - you set the choice to
+            # the option's name. Saying "held by a select" here would send someone
+            # looking for a select that does not exist.
+            parent = getattr(node, "parent", None)
+            if parent is not None and self.serializer.is_choice(parent):
+                raise KconfigError(
+                    f"{node_id} is one option of a choice, so it is not set on its "
+                    f"own. Set the choice "
+                    f"{self.serializer.node_id(parent)!r} to {node_id!r} instead.",
+                    node=node_id,
+                    choice=self.serializer.node_id(parent),
+                )
+            raise KconfigError(
+                f"{node_id} cannot be changed right now - it is held by another "
+                f"symbol's 'select', or its dependencies are not met.",
+                node=node_id,
+            )
+
+        before = self._snapshot()
+        wanted = str(value).strip()
+
+        if kind == "choice":
+            self._select_choice(node, wanted)
+        else:
+            allowed = self.serializer.assignable(node)
+            if kind in ("bool", "tristate") and wanted not in allowed:
+                raise KconfigError(
+                    f"{node_id} accepts {allowed}, not {wanted!r}",
+                    node=node_id,
+                    allowed=allowed,
+                )
+            self._assign(node, node.item, kind, wanted)
+
+        self.dirty = True
+        self.revision += 1
+        self._reanchor()
+        payload = self.menu()
+        payload["changed"] = self._diff(before)
+        return payload
+
+    def _select_choice(self, node: Any, wanted: str) -> None:
+        options = {
+            child.item.name: child
+            for child in _iter_siblings(node.list)
+            if self.serializer.is_symbol(child) and getattr(child.item, "name", None)
+        }
+        target = options.get(wanted)
+        if target is None:
+            raise KconfigError(
+                f"{wanted!r} is not one of this choice's options: {sorted(options)}",
+                node=self.serializer.node_id(node),
+                allowed=sorted(options),
+            )
+        self._assign(target, target.item, "bool", "y")
+
+    def _assign(self, node: Any, sym: Any, kind: str, wanted: str) -> None:
+        rng = self.serializer.value_range(node)
+        if rng is not None:
+            self._check_range(node, kind, wanted, rng)
+
+        accepted = sym.set_value(wanted)
+        actual = sym.str_value
+        # set_value returns False for a value of the wrong *shape*, but
+        # True-and-silently-ignored for one that is merely out of range - it leaves
+        # the symbol at its default and reports success.
+        #
+        # The explicit range check above catches that case first, so this read-back
+        # is currently belt-and-braces for it: removing the read-back alone leaves
+        # every test passing. It stays because it is the only guard that does not
+        # need to anticipate *why* a value was rejected, and kconfiglib has already
+        # been shown to reject one silently.
+        if accepted is False or not _same_value(kind, wanted, actual):
+            detail = f" (it is still {actual!r})" if accepted is not False else ""
+            suffix = f" Allowed range: {rng['min']}..{rng['max']}." if rng else ""
+            raise KconfigError(
+                f"{self.serializer.node_id(node)} would not accept {wanted!r}"
+                f"{detail}.{suffix}",
+                node=self.serializer.node_id(node),
+                requested=wanted,
+                actual=actual,
+            )
+
+    def _check_range(self, node: Any, kind: str, wanted: str, rng: dict[str, str]) -> None:
+        base = 16 if kind == "hex" else 10
+        try:
+            value = int(wanted, base)
+            low = int(rng["min"], base)
+            high = int(rng["max"], base)
+        except ValueError:
+            raise KconfigError(
+                f"{wanted!r} is not a valid {kind} value",
+                node=self.serializer.node_id(node),
+                requested=wanted,
+            ) from None
+        if not low <= value <= high:
+            raise KconfigError(
+                f"{wanted} is outside the allowed range {rng['min']}..{rng['max']}",
+                node=self.serializer.node_id(node),
+                requested=wanted,
+                allowed_range=rng,
+            )
+
+    def _snapshot(self) -> dict[str, tuple[str, bool]]:
+        """Value and visibility of every defined symbol, for diffing one change."""
+        out: dict[str, tuple[str, bool]] = {}
+        for sym in self._kconf.unique_defined_syms:
+            if sym.name:
+                out[sym.name] = (sym.str_value, sym.visibility > 0)
+        return out
+
+    def _diff(self, before: dict[str, tuple[str, bool]]) -> list[str]:
+        after = self._snapshot()
+        return sorted(n for n in set(before) | set(after) if before.get(n) != after.get(n))
+
+    # -- reading -----------------------------------------------------------
+
+    def help(self, node_id: str) -> dict[str, Any]:
+        node = self._find(node_id)
+        self.touch()
+        return {
+            "id": node_id,
+            "prompt": node.prompt[0] if node.prompt else "",
+            "help": help_for(node),
+        }
+
+    def search(self, query: str, limit: int = 60) -> dict[str, Any]:
+        """Visible symbols whose name or prompt contains `query`.
+
+        Rows come back in the same shape as a menu, all at depth 0, so the panel
+        renders results with the component it already has.
+        """
+        self.touch()
+        needle = query.strip().lower()
+        if not needle:
+            return {"query": query, "nodes": [], "truncated": False}
+        rows = []
+        for node in _walk(self._kconf.top_node.list):
+            if not self.serializer.visible(node):
+                continue
+            name = (getattr(node.item, "name", None) or "").lower()
+            prompt = (node.prompt[0] if node.prompt else "").lower()
+            if needle in name or needle in prompt:
+                rows.append(self.serializer.node(node, 0))
+                if len(rows) >= limit:
+                    break
+        return {"query": query, "nodes": rows, "truncated": len(rows) >= limit}
+
+    # -- persistence -------------------------------------------------------
+
+    def save(self) -> dict[str, Any]:
+        """Write the answers out, without ever leaving a truncated file behind.
+
+        kconfiglib's own ``write_config`` writes in place and non-atomically, so a
+        crash part-way through leaves answers that cannot be recovered - and the
+        saved answers are the one thing in this tool that genuinely cannot be
+        regenerated. So: write to a temp file, keep one generation of backup, then
+        rename into place.
+        """
+        os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+        tmp = self.config_path + ".tmp"
+        try:
+            with _srctree(self.fw_dir):
+                self._kconf.write_config(tmp)
+        except Exception as exc:  # noqa: BLE001
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise KconfigError(
+                f"could not write {self.config_path}: {exc}", path=self.config_path
+            ) from exc
+
+        backup = None
+        if os.path.isfile(self.config_path):
+            backup = self.config_path + ".bak"
+            try:
+                # replace, not copy: one generation, and no window where neither
+                # the old nor the new file is complete.
+                os.replace(self.config_path, backup)
+            except OSError:
+                backup = None
+        os.replace(tmp, self.config_path)
+
+        self.dirty = False
+        self.touch()
+        return {"path": self.config_path, "backup": backup, "dirty": False}
+
+    def reset(self) -> dict[str, Any]:
+        """Throw away unsaved edits by reparsing from disk."""
+        self._kconf = self._parse()
+        self._path = [self._kconf.top_node]
+        self.dirty = False
+        self.revision += 1
+        return self.menu()
+
+
+def _iter_siblings(node: Any) -> Iterator[Any]:
+    while node:
+        yield node
+        node = node.next
+
+
+def _walk(node: Any) -> Iterator[Any]:
+    while node:
+        yield node
+        if node.list:
+            yield from _walk(node.list)
+        node = node.next
+
+
+class SessionStore:
+    """The open configurations, bounded in both count and age.
+
+    Each parsed Kconfig holds a few MB, and a browser tab that navigates away
+    never tells anyone, so sessions have to expire on their own rather than be
+    closed politely.
+    """
+
+    #: Long enough to read the help text and think; short enough that a forgotten
+    #: tab does not pin memory until the agent restarts.
+    TTL = 30 * 60
+
+    #: Each tree costs a few MB parsed. Four is more tabs than anyone configures
+    #: at once, and the oldest idle one is evicted rather than refusing a new one.
+    MAX = 4
+
+    def __init__(self, paths: Paths) -> None:
+        self.paths = paths
+        self._sessions: dict[str, KconfigSession] = {}
+        self._next = 1
+        self._lock = threading.Lock()
+
+    def _reap(self) -> None:
+        for sid in [s for s, sess in self._sessions.items() if sess.age > self.TTL]:
+            self._sessions.pop(sid, None)
+
+    def open(self, mcu_type: str, fw: str) -> KconfigSession:
+        with self._lock:
+            self._reap()
+            if len(self._sessions) >= self.MAX:
+                # Evict the least recently used *clean* session first; only fall
+                # back to discarding unsaved work when everything is dirty.
+                candidates = sorted(self._sessions.values(), key=lambda s: (s.dirty, s.touched))
+                self._sessions.pop(candidates[0].id, None)
+            sid = f"kc-{self._next}"
+            self._next += 1
+            session = KconfigSession(sid, self.paths, mcu_type, fw)
+            self._sessions[sid] = session
+            return session
+
+    def get(self, session_id: str) -> KconfigSession:
+        with self._lock:
+            self._reap()
+            session = self._sessions.get(session_id)
+        if session is None:
+            raise KconfigError(
+                f"config session {session_id} is not open any more. It may have "
+                f"expired after {self.TTL // 60} minutes idle - reopen it and try "
+                f"again.",
+                session=session_id,
+            )
+        return session
+
+    def close(self, session_id: str) -> bool:
+        with self._lock:
+            return self._sessions.pop(session_id, None) is not None
+
+    def dirty_for(self, mcu_type: str, fw: str) -> Optional[KconfigSession]:
+        """An existing session with unsaved edits for the same target, if any.
+
+        Opening a second session on a target someone is already editing would let
+        one save silently discard the other's work, so callers check first.
+        """
+        with self._lock:
+            for session in self._sessions.values():
+                if session.mcu_type == mcu_type and session.fw == fw and session.dirty:
+                    return session
+        return None

@@ -56,6 +56,18 @@ config SERIAL_BAUD
 
 endmenu
 
+# A whole menu that disappears with the choice. Standing inside it and then
+# flipping the choice is the only way to exercise reanchoring - without this the
+# path always survives and the fallback never runs.
+menu "RP2040 specifics"
+    depends on MACH_RP2040
+
+config RP2040_BOOT_DELAY
+    int "Boot delay (ms)"
+    default 0
+
+endmenu
+
 config BOARD_NAME
     string "Board display name"
     default "testboard"
