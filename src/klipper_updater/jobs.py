@@ -34,10 +34,12 @@ CANCELLED = "cancelled"
 
 TERMINAL = (SUCCEEDED, FAILED, CANCELLED)
 
-#: Kinds whose in-flight work can be interrupted at any moment. A build can:
-#: killing make is always safe. A flash cannot - interrupting a write leaves a
-#: board with half an image - so those honour cancellation only between devices.
-IMMEDIATELY_CANCELLABLE = ("build",)
+#: Kinds whose in-flight work can be interrupted at any moment. A compile can:
+#: killing make costs at worst a half-written object file that make will redo.
+#: Anything that writes to a board cannot - interrupting flashtool leaves half an
+#: image on it - so those kinds are cancellable only between boards, which their
+#: job bodies check for themselves.
+IMMEDIATELY_CANCELLABLE = ("build", "build_all")
 
 
 @dataclasses.dataclass

@@ -86,6 +86,9 @@ application error (see `data.code`), `-32603` internal.
 | `fw.settings.get` | — | `{settings: Settings}` |
 | `fw.build` | `name`, `fw`, `jobs?`, `clean?` | `{job_id, job}` — returns immediately |
 | `fw.flash` | `serial`, `name?`, `force?` | `{job_id, job}` — **off by default**, see below |
+| `fw.build_all` | `fw?`, `scope?` | `{job_id, job, types}` — builds only, touches no board |
+| `fw.flash_all` | `scope?`, `name?`, `force?` | `{job_id, job, boards}` — **off by default** |
+| `fw.update_all` | `scope?`, `force?` | `{job_id, job, types}` — **off by default** |
 | `fw.job.get` | `job_id?`, `log_from?` | `{job, log, log_from, log_next, log_dropped}` |
 | `fw.job.cancel` | `job_id?` | `{cancelling, immediate}` |
 
@@ -218,9 +221,9 @@ moment later.
 
 | kind | behaviour |
 | --- | --- |
-| `build` | **Immediate.** The whole `make` process group is killed. Always safe. |
-| `flash`, `flash_type` | **Deferred** — honoured only *between* devices. Interrupting a `flashtool -f` write leaves a board with half an image. Show "cancelling after the current board finishes…". |
-| `update_all` | Deferred between types and devices; the in-flight build is cancellable. |
+| `build`, `build_all` | **Immediate.** The whole `make` process group is killed. Worst case is a half-written object file that `make` will redo. |
+| `flash`, `flash_all` | **Deferred** — honoured only *between* devices. Interrupting a `flashtool -f` write leaves a board with half an image. Show "cancelling after the current board finishes…". |
+| `update_all` | **Deferred**, because it may reach the flashing half. Cancelling during its build phase still waits for the current type's `make` to be killed and the loop to come round. |
 
 ### `fw.flash` — the dangerous one
 
@@ -311,6 +314,107 @@ deferred up to `--shutdown-grace`, under the unit's `TimeoutStopSec`), because
 `systemctl restart mcu-updater` mid-write would otherwise leave half an image
 on a board.
 
+### Bulk operations
+
+Three methods, but only two implementations: `fw.update_all` is `build_all`
+followed by `flash_all`, sharing their bodies rather than reimplementing the loop.
+
+| Method | Stops Klipper | Writes to boards |
+| --- | --- | --- |
+| `fw.build_all` | no | no |
+| `fw.flash_all` | yes, **once for the whole batch** | yes |
+| `fw.update_all` | yes, once, after the builds | yes |
+
+`fw.build_all` needs only a runner. The two that write are gated on
+`enable_flashing` exactly like `fw.flash`, and are absent from `capabilities`
+while it is off.
+
+#### `scope`
+
+Both scopes exist because provenance and intent are different things.
+
+| `scope` | Meaning |
+| --- | --- |
+| `"stale"` (default) | Only what the recorded provenance says needs doing. |
+| `"all"` | Everything in scope regardless. |
+
+`stale` is more precise than a version comparison, not less: a rebuilt artifact
+makes its boards stale even when the Klipper commit has not moved, which is what
+`artifact_changed` reports and what a `mcu_version` comparison structurally
+cannot see.
+
+`all` is for when you know something the provenance cannot — an edited source
+file that is not tracked, or a makefile patch whose effect you want on every
+board of a type whatever the records say. It overrides the *judgement*, never the
+physics: an offline board is still excluded, because a flash needs the board on
+the bus and including it would only guarantee a failure partway through a batch
+that has already stopped Klipper.
+
+An unrecognised `scope` is refused with `-32602` rather than falling back to
+`stale`, since a silent fallback would mean a user asking for `all` quietly
+getting nothing.
+
+#### What gets selected
+
+Both selections walk the **registry**, so an adopted-but-untracked board can
+never be swept into a bulk flash — it has no type, and therefore no firmware.
+
+`build_all` takes every type with a saved `.config` for that tree. A type that has
+never been through `menuconfig` is **skipped, not failed**: menuconfig is ncurses
+and cannot run in the agent, so there is nothing the batch could do about it, and
+failing over one unconfigured type would turn a one-type problem into a
+fleet-wide one.
+
+`flash_all` takes every tracked serial that is online, belongs to a type with a
+built artifact, and (under `stale`) has `needs_flash: true`. It is per-serial, not
+per-type: two boards of one model genuinely do run different firmware. Passing
+`name` narrows it to a single type — that is "flash this type", implemented as
+this same operation with a filter.
+
+Both refuse with `nothing_to_do` when the selection comes out empty, rather than
+starting a job that does nothing and reads as a bug.
+
+`fw.flash_all` returns the selection up front, so the panel can name the boards
+in its confirmation:
+
+```json
+{"job_id": "job-9", "job": {...},
+ "boards": [{"type": "flylllplusbuffer", "serial": "4C00...-if00",
+             "chipset": "stm32f072xb", "state": "klipper",
+             "reason": "artifact_changed"}]}
+```
+
+#### Failures do not abandon the batch
+
+One type failing to compile is usually about that type, so the loop continues and
+reports what happened — matching what the CLI's `update-all` has always done:
+
+```json
+{"build": {"fw": "klipper", "built": ["bttebb36"],
+           "failures": [{"type": "bttmmbv1", "error": "make failed (exit 2)"}]},
+ "flash": {"flashed": [{"type": "bttebb36", "serial": "2900...-if00"}],
+           "failures": []}}
+```
+
+A job with failures still ends `succeeded`; `result.*.failures` is the thing to
+render, not the job state.
+
+#### Two things `update_all` does that a naive composition would not
+
+**The boards are chosen after the build, not before.** A build is what makes
+boards stale, so selecting up front would use provenance the build is about to
+invalidate.
+
+**The idle gate is checked twice.** Once before the job is created, and again
+after the builds finish — a fleet build takes minutes, and the check that passed
+at submission is stale by the time anything is about to be written. If the printer
+has started moving, the job fails with `print_in_progress` and Klipper is never
+stopped at all.
+
+Each board is also waited for individually after its write, exactly as in a single
+flash: the last board of a batch would otherwise have nothing between its write
+and the service restart.
+
 ### The log, and its sequence numbers
 
 Every log line gets a monotonic index, starting at 0. A `log` event carries the
@@ -391,16 +495,14 @@ No polling needed:
 Reserved names, not yet implemented — the agent returns `-32601` for these and
 does not advertise them, which is why the panel gates on `capabilities`:
 
-`fw.flash_type`, `fw.update_all`, `fw.type.add`, `fw.type.update`,
-`fw.type.remove`, `fw.serial.add`, `fw.serial.remove`, `fw.settings.set`,
-`fw.kconfig.*`, `fw.add_mcu.start`, `fw.add_mcu.confirm`.
+`fw.add_mcu.start`, `fw.add_mcu.confirm` — the guided flow for a brand-new board
+that has no Katapult on it yet, and so has to be reached over DFU.
 
-`fw.flash_type` and `fw.update_all` are deliberately held back until
-single-board flashing has proved itself: `update_all` on a ten-board fleet is
-four builds plus ten sequential writes with Klipper down throughout, which is a
-much wider window for something to go wrong in.
+**`fw.flash_type` was never implemented and never will be.** It is
+`fw.flash_all {name}`: the same selection and the same loop with a filter, rather
+than a second implementation to keep in step with the first.
 
-`fw.build` deliberately refuses a type with no saved `.config`, returning
-`no_saved_config` with the exact CLI command to run. `menuconfig` is an ncurses
-UI and cannot run inside the agent — that stays an SSH operation until the
-Kconfig web UI lands.
+`fw.build` refuses a type with no saved `.config`, returning `no_saved_config`.
+`make menuconfig` is an ncurses UI and cannot run inside the agent, so the
+`.config` has to come from either that command over SSH or the `fw.kconfig.*`
+methods, which write the same file.

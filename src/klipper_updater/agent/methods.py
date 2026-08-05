@@ -30,7 +30,7 @@ from ..devices import (
     parse_entry,
     scan,
 )
-from ..errors import SerialTrackedElsewhereError, UpdaterError
+from ..errors import OperationCancelled, SerialTrackedElsewhereError, UpdaterError
 from ..paths import FW_TARGETS, REENUMERATE_TIMEOUT, Paths
 from ..settings import Settings, load_settings, save_settings
 from .rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, MethodNotFound, RpcError
@@ -1042,6 +1042,9 @@ class Api:
         "fw.flash": "flash",
         "fw.job.get": "job_get",
         "fw.job.cancel": "job_cancel",
+        "fw.build_all": "build_all",
+        "fw.flash_all": "flash_all",
+        "fw.update_all": "update_all",
         "fw.serial.add": "serial_add",
         "fw.serial.remove": "serial_remove",
         "fw.type.add": "type_add",
@@ -1061,11 +1064,19 @@ class Api:
 
     #: Registered with Moonraker only when a runner is present, so a read-only
     #: deployment doesn't advertise controls it cannot honour.
-    JOB_METHODS = ("fw.build", "fw.flash", "fw.job.get", "fw.job.cancel")
+    JOB_METHODS = (
+        "fw.build",
+        "fw.flash",
+        "fw.job.get",
+        "fw.job.cancel",
+        "fw.build_all",
+        "fw.flash_all",
+        "fw.update_all",
+    )
 
     #: Advertised only when enable_flashing is on. The panel hides its flash
     #: buttons accordingly, rather than offering something that gets refused.
-    FLASH_METHODS = ("fw.flash",)
+    FLASH_METHODS = ("fw.flash", "fw.flash_all", "fw.update_all")
 
     def available_methods(self) -> dict[str, str]:
         out = dict(self.METHODS)
@@ -1079,6 +1090,344 @@ class Api:
         return out
 
 
+
+
+    # -- bulk operations ----------------------------------------------------
+
+    #: Scopes shared by every bulk operation.
+    #:
+    #: ``stale`` - only what the provenance says needs doing. Correct *because* of
+    #:   the flash log: a rebuilt artifact makes its boards stale even when the
+    #:   klipper commit has not moved, which is the case a version comparison
+    #:   cannot see.
+    #: ``all`` - everything in scope regardless. For when you know something the
+    #:   provenance cannot, such as having edited an untracked source file.
+    SCOPES = ("stale", "all")
+
+    def _scope(self, args: dict) -> str:
+        scope = str(args.get("scope") or "stale")
+        if scope not in self.SCOPES:
+            raise RpcError(
+                f"'scope' must be one of {list(self.SCOPES)}", ERR_INVALID_PARAMS
+            )
+        return scope
+
+    def _types_to_build(self, reg: Registry, fw: str, scope: str) -> list[str]:
+        """Which types a build_all should touch, and in a stable order.
+
+        A type with no saved config is skipped rather than failed: menuconfig is
+        ncurses and cannot run here, so there is nothing this could do about it, and
+        failing the whole batch over one unconfigured type would be worse.
+        """
+        from ..build import staleness
+
+        out = []
+        for name in reg.names():
+            if not os.path.exists(self.paths.config_file(name, fw)):
+                continue
+            if scope == "all":
+                out.append(name)
+                continue
+            stale, _ = staleness(self.paths, name, fw)
+            if stale:
+                out.append(name)
+        return out
+
+    def _boards_to_flash(self, reg: Registry, scope: str, only: Optional[str] = None) -> list[dict]:
+        """Which boards a flash_all should write, with the reason for each.
+
+        Offline boards are never included: a flash needs the device on the bus, so
+        including them would only produce a guaranteed failure partway through a
+        batch that has already stopped Klipper.
+        """
+        from ..build import FlashLog, git_head, read_sidecar
+
+        versions = self.mcu_info()
+        fw_head = git_head(self.paths.fw_dir("klipper"))
+        flashlog = FlashLog(self.paths)
+
+        out: list[dict] = []
+        for name in reg.names():
+            if only is not None and name != only:
+                continue
+            mcu = reg.get(name)
+            if not os.path.exists(self.paths.bin_file(name, "klipper")):
+                continue
+            artifact_sha = (read_sidecar(self.paths, name, "klipper") or {}).get("bin_sha256")
+            for serial in mcu.serials:
+                state, _ = device_state(self.paths, mcu.chipset, serial)
+                if state == STATE_OFFLINE:
+                    continue
+                info = self.flash_state(
+                    serial,
+                    versions,
+                    fw_head,
+                    state=state,
+                    artifact_sha=artifact_sha,
+                    flashlog=flashlog,
+                )
+                if scope == "all" or info["needs_flash"] is True:
+                    out.append(
+                        {
+                            "type": name,
+                            "serial": serial,
+                            "chipset": mcu.chipset,
+                            "state": state,
+                            "reason": info["reason"] if scope != "all" else "forced",
+                        }
+                    )
+        return out
+
+    def _do_build_all(self, ctx: Any, fw: str, names: list[str]) -> dict[str, Any]:
+        """Build each type in turn, reporting failures rather than stopping.
+
+        Matches what the CLI's update-all has always done. One type failing to
+        compile is usually about that type, and abandoning the rest would turn a
+        one-board problem into a whole-fleet one.
+        """
+        from ..build import build as do_build
+
+        built: list[str] = []
+        failures: list[dict[str, str]] = []
+        total = len(names)
+        for index, name in enumerate(names):
+            ctx.check_cancelled()
+            ctx.step(f"Building {fw} for {name}", index, total)
+            try:
+                do_build(
+                    self.paths,
+                    self.registry(),
+                    self.settings(),
+                    name,
+                    fw,
+                    reporter=ctx.reporter,
+                    cancel=ctx.cancel,
+                )
+                built.append(name)
+            except OperationCancelled:
+                raise
+            except UpdaterError as exc:
+                ctx.reporter("warn", f"{name}: {exc}")
+                failures.append({"type": name, "error": str(exc)})
+        ctx.step(f"Built {len(built)} of {total}", total, total)
+        return {"fw": fw, "built": built, "failures": failures}
+
+    def _do_flash_all(self, ctx: Any, boards: list[dict]) -> dict[str, Any]:
+        """Write every selected board, with Klipper stopped once for the batch.
+
+        Once per batch rather than once per board: ten stop/start cycles would take
+        far longer and give ten chances for the restart to be the thing that fails.
+
+        Cancellation is honoured *between* boards only. Interrupting a flashtool
+        write leaves half an image on a board, so the check is at the top of each
+        iteration and never inside one.
+        """
+        from ..devices import KLIPPER_FW_NAME, wait_for_device
+        from ..errors import BootloaderTimeoutError
+        from ..flash import flash_katapult
+        from ..service import klipper_stopped, make_controller
+
+        settings = self.settings()
+        svc = make_controller(settings, call=self._call_for_service)
+        flashed: list[dict[str, str]] = []
+        failures: list[dict[str, str]] = []
+        total = len(boards)
+
+        with klipper_stopped(self.paths, svc, f"flash {total} board(s)", reporter=ctx.reporter):
+            for index, board in enumerate(boards):
+                # Between boards, never inside a write.
+                ctx.check_cancelled()
+                ctx.step(f"Flashing {board['serial']} ({board['type']})", index, total)
+                try:
+                    flash_katapult(
+                        self.paths,
+                        settings,
+                        board["type"],
+                        board["chipset"],
+                        board["serial"],
+                        reporter=ctx.reporter,
+                    )
+                    flashed.append({"type": board["type"], "serial": board["serial"]})
+                    # Same contract as the single flash: the board reboots into
+                    # the new firmware and re-enumerates over USB, and starting
+                    # Klipper before its device node exists brings it up in an
+                    # error state. Per board rather than once at the end - the
+                    # last board of a batch would otherwise have nothing at all
+                    # between its write and the service restart.
+                    if not settings.dry_run:
+                        try:
+                            wait_for_device(
+                                self.paths,
+                                board["chipset"],
+                                board["serial"],
+                                KLIPPER_FW_NAME,
+                                timeout=REENUMERATE_TIMEOUT,
+                                settle=1.0,
+                            )
+                        except BootloaderTimeoutError as exc:
+                            # Not fatal, and deliberately not counted as a
+                            # failure: the write succeeded, and the readiness
+                            # check after the batch is the real verdict.
+                            ctx.reporter("warn", str(exc))
+                except OperationCancelled:
+                    raise
+                except UpdaterError as exc:
+                    ctx.reporter("warn", f"{board['serial']}: {exc}")
+                    failures.append({"serial": board["serial"], "error": str(exc)})
+            ctx.step(f"Flashed {len(flashed)} of {total}", total, total)
+
+        # klipper_stopped has started the service again by now; confirm it really
+        # came back, which is the release gate for every flashing path.
+        ctx.reporter("info", "Waiting for Klipper to be ready...")
+        self._await_klippy_ready(ctx.reporter)
+        return {"flashed": flashed, "failures": failures}
+
+    def build_all(self, args: dict) -> dict[str, Any]:
+        """Build every type that needs it. Touches no board and stops nothing."""
+        runner = self._require_runner()
+        scope = self._scope(args)
+        fw = str(args.get("fw") or "klipper")
+        if fw not in FW_TARGETS:
+            raise RpcError(f"'fw' must be one of {list(FW_TARGETS)}", ERR_INVALID_PARAMS)
+
+        names = self._types_to_build(self.registry(), fw, scope)
+        if not names:
+            raise RpcError(
+                f"nothing to build: no type has a saved {fw} config that is out of date. "
+                f"Use scope 'all' to rebuild regardless.",
+                data={
+                    "code": "nothing_to_do",
+                    "message": "no types need building",
+                    "data": {"fw": fw, "scope": scope},
+                },
+            )
+
+        def run(ctx) -> dict[str, Any]:
+            return self._do_build_all(ctx, fw, names)
+
+        job = runner.submit("build_all", {"fw": fw, "scope": scope, "types": names}, run)
+        return {"job_id": job.id, "job": job.to_dict(), "types": names}
+
+    def flash_all(self, args: dict) -> dict[str, Any]:
+        """Flash every board that needs it, or every board of one type.
+
+        `name` narrows it to a single type - that is `flash_type`, which is the same
+        operation with a filter rather than a second implementation of it.
+        """
+        runner = self._require_runner()
+        settings = self.settings()
+        if not settings.enable_flashing:
+            raise RpcError(
+                "flashing from the web UI is disabled. Set 'enable_flashing = true' in "
+                f"{self.paths.settings_file} to allow it.",
+                data={
+                    "code": "flashing_disabled",
+                    "message": "enable_flashing is false",
+                    "data": {"settings_file": self.paths.settings_file},
+                },
+            )
+
+        scope = self._scope(args)
+        only = args.get("name")
+        reg = self.registry()
+        if only is not None:
+            reg.get(str(only))  # fail fast on a typo, before a job exists
+            only = str(only)
+
+        boards = self._boards_to_flash(reg, scope, only)
+        if not boards:
+            raise RpcError(
+                "nothing to flash: every online board already matches its built "
+                "firmware. Use scope 'all' to flash regardless.",
+                data={
+                    "code": "nothing_to_do",
+                    "message": "no boards need flashing",
+                    "data": {"scope": scope, "name": only},
+                },
+            )
+
+        # The print gate, once, before a job exists - so the refusal carries a real
+        # explanation rather than arriving as a job that dies a second later.
+        from ..service import assert_printer_idle
+
+        assert_printer_idle(
+            settings,
+            activity=self._printer_activity,
+            force=bool(args.get("force")),
+            reporter=self._log_reporter,
+        )
+
+        def run(ctx) -> dict[str, Any]:
+            return self._do_flash_all(ctx, boards)
+
+        job = runner.submit(
+            "flash_all",
+            {"scope": scope, "name": only, "count": len(boards)},
+            run,
+        )
+        return {"job_id": job.id, "job": job.to_dict(), "boards": boards}
+
+    def update_all(self, args: dict) -> dict[str, Any]:
+        """Build what is stale, then flash what is behind - one Klipper stop.
+
+        Composed from the same two routines the individual operations use, rather
+        than a third implementation of the loop. Its purpose is a klipper update, so
+        `stale` here means the source tree moved; the artifact-hash precision
+        matters more to flash_type after a patch change.
+        """
+        runner = self._require_runner()
+        settings = self.settings()
+        if not settings.enable_flashing:
+            raise RpcError(
+                "flashing from the web UI is disabled, so update-all cannot run. Set "
+                f"'enable_flashing = true' in {self.paths.settings_file} to allow it.",
+                data={
+                    "code": "flashing_disabled",
+                    "message": "enable_flashing is false",
+                    "data": {"settings_file": self.paths.settings_file},
+                },
+            )
+
+        scope = self._scope(args)
+        reg = self.registry()
+        names = self._types_to_build(reg, "klipper", scope)
+
+        from ..service import assert_printer_idle
+
+        assert_printer_idle(
+            settings,
+            activity=self._printer_activity,
+            force=bool(args.get("force")),
+            reporter=self._log_reporter,
+        )
+
+        def run(ctx) -> dict[str, Any]:
+            build_result = self._do_build_all(ctx, "klipper", names) if names else {
+                "fw": "klipper",
+                "built": [],
+                "failures": [],
+            }
+            # Selected *after* building, because a build is what makes boards stale:
+            # choosing the boards up front would use provenance that the build has
+            # just invalidated.
+            boards = self._boards_to_flash(self.registry(), scope)
+            if not boards:
+                ctx.reporter("info", "No board needs flashing.")
+                return {"build": build_result, "flash": {"flashed": [], "failures": []}}
+
+            # Gate again. The check before submission was minutes ago - a whole
+            # fleet build - and the printer may have started moving since. This
+            # is the last moment before Klipper gets stopped.
+            assert_printer_idle(
+                settings,
+                activity=self._printer_activity,
+                force=bool(args.get("force")),
+                reporter=ctx.reporter,
+            )
+            return {"build": build_result, "flash": self._do_flash_all(ctx, boards)}
+
+        job = runner.submit("update_all", {"scope": scope, "types": names}, run)
+        return {"job_id": job.id, "job": job.to_dict(), "types": names}
 
     # -- what is actually running on the boards -----------------------------
 
