@@ -66,6 +66,27 @@ class BusDevice:
             return STATE_KATAPULT
         return self.fw.lower()
 
+    @property
+    def is_mcu(self) -> bool:
+        """Could this plausibly be a board we manage firmware for?
+
+        The by-id name format is generic enough that anything with two
+        underscores parses. A CH340 serial adapter enumerates as
+        ``usb-1a86_USB_Serial-if00``, which splits into fw=``1a86``,
+        chipset=``USB``, serial=``Serial-if00`` - a perfectly well-formed
+        `BusDevice` that is not a board at all.
+
+        That mattered once the panel grew a one-tap "track this" next to the
+        untracked list: a Knomi display sitting in that list is one tap from
+        being added to the registry and having Klipper firmware built and
+        flashed at it.
+
+        Katapult counts, deliberately and importantly. A board in its bootloader
+        is the single most likely thing to want adopting - that is exactly what
+        `add-mcu` leaves behind on success.
+        """
+        return self.is_klipper or self.is_katapult
+
 
 def parse_entry(name: str, directory: str) -> Optional[BusDevice]:
     """Parse one by-id filename. Returns None if it isn't a recognisable device."""

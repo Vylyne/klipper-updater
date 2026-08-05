@@ -305,3 +305,46 @@ def test_an_unexpected_moonraker_shape_is_reported_as_unknown(paths, live_regist
     res = Api(paths, call=lambda m, p, t: {"unexpected": True}).dispatch("fw.status")
     assert res["klipper_service"] is None
     assert res["printing"] is None
+
+
+# --------------------------------------------------------------------------
+# fw.bus.scan - the adoptable subset
+# --------------------------------------------------------------------------
+
+
+def test_bus_scan_exposes_is_mcu_per_device(api, fake_root):
+    make_device(fake_root / "bus", "katapult", "stm32f072xb", "NEWBOARD-if00")
+    (fake_root / "bus" / "usb-1a86_USB_Serial-if00").write_text("", encoding="utf-8")
+
+    by_serial = {d["serial"]: d for d in api.dispatch("fw.bus.scan")["devices"]}
+    assert by_serial["NEWBOARD-if00"]["is_mcu"] is True
+    assert by_serial["Serial-if00"]["is_mcu"] is False
+
+
+def test_adoptable_excludes_serial_adapters(api, fake_root):
+    """The Phase 4 footgun: a Knomi's CH340 one tap from being tracked as a board
+    and having Klipper firmware built for it."""
+    make_device(fake_root / "bus", "katapult", "stm32f072xb", "NEWBOARD-if00")
+    (fake_root / "bus" / "usb-1a86_USB_Serial-if00").write_text("", encoding="utf-8")
+
+    res = api.dispatch("fw.bus.scan")
+    assert [d["serial"] for d in res["adoptable"]] == ["NEWBOARD-if00"]
+    # ...but the adapter is still *visible*, because someone hunting for a board
+    # that hasn't appeared is better served by seeing what did.
+    assert "Serial-if00" in [d["serial"] for d in res["devices"]]
+
+
+def test_adoptable_excludes_already_tracked_boards(api, fake_root, live_registry_text):
+    """A tracked serial from the live registry must not be offered again."""
+    make_device(fake_root / "bus", "Klipper", "stm32g0b1xx", "290055001850304158373620-if00")
+    res = api.dispatch("fw.bus.scan")
+    tracked = next(d for d in res["devices"] if d["serial"].startswith("290055"))
+    assert tracked["tracked_by"] == "bttebb36"
+    assert tracked["serial"] not in [d["serial"] for d in res["adoptable"]]
+
+
+def test_adoptable_respects_the_chipset_filter(api, fake_root):
+    make_device(fake_root / "bus", "katapult", "stm32f072xb", "AAAA-if00")
+    make_device(fake_root / "bus", "katapult", "rp2040", "BBBB-if00")
+    res = api.dispatch("fw.bus.scan", {"chipset": "rp2040"})
+    assert [d["serial"] for d in res["adoptable"]] == ["BBBB-if00"]

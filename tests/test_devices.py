@@ -123,3 +123,48 @@ def test_scan_is_sorted_and_stable(paths, fake_root):
     for serial in ("c", "a", "b"):
         make_device(bus, "Klipper", "chipA", serial)
     assert [d.serial for d in scan(paths)] == ["a", "b", "c"]
+
+
+# --------------------------------------------------------------------------
+# is_mcu - which entries may be offered for adoption
+# --------------------------------------------------------------------------
+
+
+def test_a_ch340_adapter_parses_as_a_device_but_is_not_an_mcu(paths, fake_root):
+    """usb-1a86_USB_Serial-if00 splits into three parts and so parses cleanly.
+    It is a Knomi's serial adapter, not a board - and once the panel offers
+    one-tap "track this", listing it is one tap from building Klipper firmware
+    for a display."""
+    bus = fake_root / "bus"
+    (bus / "usb-1a86_USB_Serial-if00").write_text("", encoding="utf-8")
+
+    found = scan(paths)
+    assert len(found) == 1
+    assert found[0].is_mcu is False
+
+
+@pytest.mark.parametrize(
+    ("fw", "expected"),
+    [
+        ("Klipper", True),
+        ("klipper", True),  # lowercase happens; the bug-3 fix
+        ("katapult", True),
+        ("Katapult", True),
+        ("CanBoot", True),  # pre-rename bootloaders are still out there
+        ("1a86", False),
+        ("Prolific", False),
+        ("FTDI", False),
+    ],
+)
+def test_only_klipper_and_katapult_devices_are_adoptable(paths, fake_root, fw, expected):
+    make_device(fake_root / "bus", fw, "stm32g0b1xx", "AAAA1111-if00")
+    found = scan(paths)
+    assert len(found) == 1
+    assert found[0].is_mcu is expected
+
+
+def test_a_board_in_its_bootloader_is_adoptable(paths, fake_root):
+    """The most important true case: a board sitting in Katapult is exactly what
+    add-mcu leaves behind, so it is the thing most likely to need adopting."""
+    make_device(fake_root / "bus", "katapult", "stm32g0b1xx", "NEWBOARD-if00")
+    assert scan(paths)[0].is_mcu is True

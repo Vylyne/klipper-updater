@@ -55,6 +55,11 @@ def serialize_device(dev: BusDevice, tracked_by: Optional[str] = None) -> dict[s
         "path": dev.path,
         "state": dev.state,
         "tracked_by": tracked_by,
+        # Whether "track this" may be offered for it. Anything with two
+        # underscores in its by-id name parses as a device, so the list also
+        # contains USB serial adapters - and offering to adopt a Knomi's CH340 is
+        # one tap from building Klipper firmware for a display.
+        "is_mcu": dev.is_mcu,
     }
 
 
@@ -229,6 +234,13 @@ class Api:
         return {"types": [self.type_status(reg, n) for n in reg.names()]}
 
     def bus_scan(self, args: dict) -> dict[str, Any]:
+        """Everything on the bus, plus the subset worth offering to track.
+
+        `adoptable` is what a "track this" affordance should iterate. It is a
+        separate key rather than a filter applied to `devices` so the panel can
+        still *show* the other entries - a user hunting for a board that has not
+        appeared is better served by seeing what did appear than by an empty list.
+        """
         reg = self.registry()
         devices = self.bus(reg)
         if args.get("only_untracked"):
@@ -236,7 +248,12 @@ class Api:
         chipset = args.get("chipset")
         if chipset:
             devices = [d for d in devices if d["chipset"] == chipset]
-        return {"devices": devices}
+        return {
+            "devices": devices,
+            "adoptable": [
+                d for d in devices if d["is_mcu"] and d["tracked_by"] is None
+            ],
+        }
 
     def artifacts(self, args: dict) -> dict[str, Any]:
         name = args.get("name")
