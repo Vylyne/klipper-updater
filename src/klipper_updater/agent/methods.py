@@ -24,7 +24,7 @@ from ..config import Registry
 from ..devices import BusDevice, device_state, scan
 from ..errors import SerialTrackedElsewhereError, UpdaterError
 from ..paths import FW_TARGETS, REENUMERATE_TIMEOUT, Paths
-from ..settings import Settings, load_settings
+from ..settings import Settings, load_settings, save_settings
 from .rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, MethodNotFound, RpcError
 
 #: How long a Moonraker query may block before we give up and report unknown.
@@ -269,6 +269,105 @@ class Api:
 
     def settings_get(self, args: dict) -> dict[str, Any]:
         return {"settings": dataclasses.asdict(self.settings())}
+
+    #: Settings the panel may change. Everything here is a *behaviour* preference.
+    #:
+    #: `service` and `service_backend` are deliberately absent. They describe how
+    #: this host is wired, not what the user wants, and getting them wrong breaks
+    #: the agent's ability to stop Klipper - `service_backend: null` in particular
+    #: would let a real flash proceed *without* stopping it, which fails at best
+    #: and corrupts a board at worst. Nothing about a browser form makes that a
+    #: sensible thing to offer; editing the cfg is the right amount of friction.
+    SETTABLE = (
+        "make_jobs",
+        "clean_before_build",
+        "dry_run",
+        "enable_flashing",
+        "allow_flash_while_printing",
+        "log_ring_size",
+    )
+
+    #: Changing either of these changes what a flash is allowed to do, so they are
+    #: logged at warning level: the agent log is the only audit trail there is.
+    LOUD_SETTINGS = ("enable_flashing", "allow_flash_while_printing")
+
+    def settings_set(self, args: dict) -> dict[str, Any]:
+        """Change tool settings. Only the keys supplied are touched.
+
+        Writes through `save_settings`, which load-modify-writes the ``[updater]``
+        section via CfgDocument - so the ``[mcu ...]`` sections and every comment
+        in the shared file survive.
+        """
+        patch = args.get("settings")
+        if not isinstance(patch, dict) or not patch:
+            raise RpcError(
+                "'settings' must be a non-empty object of the values to change",
+                ERR_INVALID_PARAMS,
+            )
+
+        unknown = [k for k in patch if k not in self.SETTABLE]
+        if unknown:
+            raise RpcError(
+                f"cannot set {', '.join(sorted(unknown))} from here. Settable: "
+                f"{', '.join(self.SETTABLE)}. 'service' and 'service_backend' "
+                f"describe how this host is wired and are edited in "
+                f"{self.paths.settings_file}.",
+                data={
+                    "code": "setting_not_settable",
+                    "message": "one or more settings cannot be changed remotely",
+                    "data": {"rejected": sorted(unknown), "settable": list(self.SETTABLE)},
+                },
+            )
+
+        current = self.settings()
+        changed: dict[str, Any] = {}
+        for key, raw in patch.items():
+            value = self._coerce_setting(key, raw)
+            if value != getattr(current, key):
+                changed[key] = value
+            setattr(current, key, value)
+
+        save_settings(self.paths.settings_file, current)
+
+        for key in self.LOUD_SETTINGS:
+            if key in changed and self._log is not None:
+                self._log.warning(f"{key} was changed to {changed[key]} from the panel")
+
+        self._changed()
+        return {"settings": dataclasses.asdict(current), "changed": sorted(changed)}
+
+    @staticmethod
+    def _coerce_setting(key: str, raw: Any) -> Any:
+        """Validate one setting, refusing rather than clamping.
+
+        Silently clamping a value the user typed means the UI shows one thing and
+        the tool does another - the same class of quiet disagreement that made a
+        working QGL refusal look like a dead agent.
+        """
+        if key in ("clean_before_build", "dry_run", "enable_flashing", "allow_flash_while_printing"):
+            if not isinstance(raw, bool):
+                raise RpcError(f"'{key}' must be true or false", ERR_INVALID_PARAMS)
+            return raw
+
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            # bool is an int subclass, so it would otherwise sail through.
+            raise RpcError(f"'{key}' must be a whole number", ERR_INVALID_PARAMS)
+
+        if key == "make_jobs":
+            # -1 and below mean "one job per CPU"; 0 means pass no -j flag at all.
+            if raw < -1 or raw > 64:
+                raise RpcError(
+                    "'make_jobs' must be between -1 and 64 (-1 = one per CPU, 0 = no -j flag)",
+                    ERR_INVALID_PARAMS,
+                )
+            return raw
+
+        if key == "log_ring_size":
+            if raw < 100 or raw > 100_000:
+                raise RpcError("'log_ring_size' must be between 100 and 100000", ERR_INVALID_PARAMS)
+            return raw
+
+        raise RpcError(f"'{key}' cannot be set", ERR_INVALID_PARAMS)
 
     # -- registry mutation -------------------------------------------------
 
@@ -847,6 +946,7 @@ class Api:
         "fw.bus.scan": "bus_scan",
         "fw.artifacts": "artifacts",
         "fw.settings.get": "settings_get",
+        "fw.settings.set": "settings_set",
         "fw.build": "build",
         "fw.flash": "flash",
         "fw.job.get": "job_get",

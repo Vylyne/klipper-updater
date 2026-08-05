@@ -12,6 +12,7 @@ import pytest
 from klipper_updater import API_VERSION
 from klipper_updater.agent.methods import Api
 from klipper_updater.agent.rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcError
+from klipper_updater.settings import Settings
 
 from .conftest import make_device
 
@@ -608,3 +609,108 @@ def test_type_remove_refuses_an_unknown_type(api):
     with pytest.raises(RpcError) as exc:
         api.dispatch("fw.type.remove", {"name": "nope"})
     assert exc.value.data["code"] == "unknown_type"
+
+
+# --------------------------------------------------------------------------
+# fw.settings.set
+# --------------------------------------------------------------------------
+
+
+def test_settings_set_changes_only_what_was_sent(api):
+    before = api.dispatch("fw.settings.get")["settings"]
+    res = api.dispatch("fw.settings.set", {"settings": {"make_jobs": 4}})
+
+    assert res["settings"]["make_jobs"] == 4
+    assert res["changed"] == ["make_jobs"]
+    assert res["settings"]["clean_before_build"] == before["clean_before_build"]
+    assert api.dispatch("fw.settings.get")["settings"]["make_jobs"] == 4
+
+
+def test_settings_set_reports_nothing_changed_when_the_value_matches(api):
+    api.dispatch("fw.settings.set", {"settings": {"make_jobs": 4}})
+    again = api.dispatch("fw.settings.set", {"settings": {"make_jobs": 4}})
+    assert again["changed"] == []
+
+
+def test_settings_set_does_not_eat_the_registry_it_shares_a_file_with(api, paths):
+    """Settings and the [mcu ...] sections live in one file, so a settings write
+    that rewrote the file would take the whole registry with it."""
+    api.dispatch("fw.settings.set", {"settings": {"enable_flashing": True}})
+
+    assert api.registry().names() == ["bttebb36", "bttmmbv1", "flylllplusbuffer", "sv08Mainboard"]
+    with open(paths.main_config, encoding="utf-8") as fh:
+        out = fh.read()
+    assert "# mcu-updater configuration." in out
+    assert "src/Makefile -> src-y += buffer.c" in out
+
+
+def test_settings_set_announces_the_change(paths, live_registry_text):
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    changes: list[int] = []
+    api = Api(paths, on_change=lambda: changes.append(1))
+    api.dispatch("fw.settings.set", {"settings": {"dry_run": True}})
+    assert len(changes) == 1
+
+
+@pytest.mark.parametrize("key", ["service", "service_backend"])
+def test_wiring_settings_cannot_be_changed_remotely(api, key):
+    """service_backend: null would let a real flash proceed *without* stopping
+    klipper. Nothing about a browser form makes that worth offering."""
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.settings.set", {"settings": {key: "null"}})
+    assert exc.value.data["code"] == "setting_not_settable"
+    assert key in exc.value.data["data"]["rejected"]
+
+
+def test_an_unknown_setting_is_refused(api):
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.settings.set", {"settings": {"nonsense": 1}})
+    assert exc.value.data["code"] == "setting_not_settable"
+
+
+@pytest.mark.parametrize(
+    ("payload", "why"),
+    [
+        ({"make_jobs": "4"}, "a string is not a number"),
+        ({"make_jobs": True}, "bool is an int subclass and must not sail through"),
+        ({"make_jobs": -2}, "below the -1 = one per CPU floor"),
+        ({"make_jobs": 65}, "absurdly high"),
+        ({"log_ring_size": 0}, "would keep no log at all"),
+        ({"log_ring_size": 10**7}, "would eat the host's memory"),
+        ({"enable_flashing": "yes"}, "a string is not a boolean"),
+        ({"enable_flashing": 1}, "1 is not a boolean here"),
+    ],
+)
+def test_bad_values_are_refused_not_clamped(api, payload, why):
+    """Clamping means the UI shows one thing and the tool does another - the same
+    quiet disagreement that made a working QGL refusal look like a dead agent."""
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.settings.set", {"settings": payload})
+    assert exc.value.code == ERR_INVALID_PARAMS
+    key = next(iter(payload))
+    assert getattr(api.settings(), key) == getattr(Settings(), key), why
+
+
+@pytest.mark.parametrize("payload", [{}, {"settings": {}}, {"settings": "nope"}, {"settings": None}])
+def test_settings_set_requires_a_non_empty_object(api, payload):
+    with pytest.raises(RpcError) as exc:
+        api.dispatch("fw.settings.set", payload)
+    assert exc.value.code == ERR_INVALID_PARAMS
+
+
+def test_enabling_flashing_makes_fw_flash_appear(paths, live_registry_text):
+    """The capability list is what the panel gates its flash buttons on, so this is
+    the whole point: no SSH, no restart."""
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    from klipper_updater.jobs import JobRunner
+
+    api = Api(paths)
+    # The runner needs a settings getter, and it must be the Api's own so the
+    # capability list reflects a change the instant it is written.
+    api.runner = JobRunner(paths, api.settings)
+    assert "fw.flash" not in api.dispatch("fw.ping")["capabilities"]
+
+    api.dispatch("fw.settings.set", {"settings": {"enable_flashing": True}})
+    assert "fw.flash" in api.dispatch("fw.ping")["capabilities"]
