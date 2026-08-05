@@ -104,6 +104,7 @@ def test_status_type_shape(api):
         "running_version",
         "running_sha",
         "needs_flash",
+        "reason",
     }
     assert set(ebb["artifacts"]) == {"klipper", "katapult"}
     assert ebb["katapult"]["installed"] is True
@@ -1114,6 +1115,10 @@ def test_two_boards_of_one_type_can_disagree(paths, live_registry_text, fake_roo
     EBBT0 on -711 and EBBT1 on -712, both tracked under bttebb36."""
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
+    # Both boards have to be *on the bus*: an offline board is now reported as
+    # unassessable rather than as up to date, which is the point.
+    for serial in ("290055001850304158373620-if00", "230048001750304158373620-if00"):
+        make_device(fake_root / "bus", "Klipper", "stm32g0b1xx", serial)
     api = Api(paths)
     versions = {
         "290055001850304158373620-if00": {"version": "v0.13.0-711-gd7cea5bb", "mcu": "mcu EBBT0"},
@@ -1153,3 +1158,126 @@ def test_the_klipper_mcu_name_travels_with_the_serial(api):
     assert api.flash_state("A-if00", info, head)["mcu"] == "mcu EBBT0"
     # Unknown board: no name to give, and None rather than a guess.
     assert api.flash_state("B-if00", info, head)["mcu"] is None
+
+
+# --------------------------------------------------------------------------
+# why a board needs flashing
+#
+# The answers are not equivalent, and the bulk operations depend on telling them
+# apart: "in its bootloader" is a strong yes, "offline" is not an answer at all.
+# --------------------------------------------------------------------------
+
+HEAD = "d7cea5bb1aca70849f28d0bb98ab1b96b9f6db65"
+CURRENT = {"A-if00": {"version": "v0.13.0-711-gd7cea5bb", "mcu": "mcu EBBT0"}}
+
+
+def test_a_board_in_its_bootloader_is_a_strong_yes(api):
+    """It reports no klipper version at all, which is not "unknown": a board
+    waiting in Katapult is the clearest possible signal that it wants firmware."""
+    state = api.flash_state("A-if00", {}, HEAD, state="katapult")
+    assert state["needs_flash"] is True
+    assert state["reason"] == "in_bootloader"
+
+
+def test_an_offline_board_is_not_an_answer(api):
+    state = api.flash_state("A-if00", CURRENT, HEAD, state="offline")
+    assert state["needs_flash"] is None
+    assert state["reason"] == "offline"
+
+
+def test_an_older_commit_is_source_changed(api):
+    info = {"A-if00": {"version": "v0.13.0-623-gaea1bcf5", "mcu": "mcu hexa"}}
+    state = api.flash_state("A-if00", info, HEAD, state="klipper")
+    assert state["needs_flash"] is True
+    assert state["reason"] == "source_changed"
+
+
+def test_a_matching_commit_with_no_record_is_taken_at_face_value(api):
+    """The flash log only ever *adds* confidence. Degrading every board that
+    predates the log to "unknown" would be noise, not caution."""
+    state = api.flash_state("A-if00", CURRENT, HEAD, state="klipper", artifact_sha="aa" * 32)
+    assert state["needs_flash"] is False
+    assert state["reason"] is None
+
+
+def test_the_same_commit_with_a_different_binary_is_artifact_changed(api, paths):
+    """The case a version comparison structurally cannot see, and Vi's actual
+    workflow: edit the buffer patch, rebuild, and the boards still report the same
+    klipper commit while holding last week's firmware."""
+    from klipper_updater.build import FlashLog
+
+    log = FlashLog(paths)
+    log.record("A-if00", mcu_type="t", fw="klipper", bin_sha256="old" + "0" * 61, fw_sha=HEAD)
+
+    state = api.flash_state(
+        "A-if00", CURRENT, HEAD, state="klipper", artifact_sha="new" + "0" * 61, flashlog=log
+    )
+    assert state["needs_flash"] is True
+    assert state["reason"] == "artifact_changed"
+
+
+def test_the_same_binary_is_up_to_date(api, paths):
+    from klipper_updater.build import FlashLog
+
+    log = FlashLog(paths)
+    log.record("A-if00", mcu_type="t", fw="klipper", bin_sha256="aa" * 32, fw_sha=HEAD)
+
+    state = api.flash_state(
+        "A-if00", CURRENT, HEAD, state="klipper", artifact_sha="aa" * 32, flashlog=log
+    )
+    assert state["needs_flash"] is False
+    assert state["reason"] is None
+
+
+def test_a_record_contradicted_by_the_board_is_ignored(api, paths):
+    """Flashed by hand outside the tool: the record cannot be trusted, so the
+    commit comparison stands on its own rather than an invented mismatch."""
+    from klipper_updater.build import FlashLog
+
+    log = FlashLog(paths)
+    log.record("A-if00", mcu_type="t", fw="klipper", bin_sha256="old" + "0" * 61, fw_sha="ffffffff")
+
+    state = api.flash_state(
+        "A-if00", CURRENT, HEAD, state="klipper", artifact_sha="new" + "0" * 61, flashlog=log
+    )
+    assert state["needs_flash"] is False, "a disbelieved record must not invent a mismatch"
+
+
+def test_an_unparseable_version_is_unknown(api):
+    info = {"A-if00": {"version": "v0.12.0", "mcu": "mcu"}}
+    state = api.flash_state("A-if00", info, HEAD, state="klipper")
+    assert state["needs_flash"] is None
+    assert state["reason"] == "unknown_version"
+
+
+def test_a_flash_writes_a_record(paths, live_registry_text):
+    """End to end: after a dry-run flash the board's binary is on file, so the next
+    rebuild can tell that board is behind."""
+    import dataclasses
+
+    from klipper_updater.build import FlashLog, build
+    from klipper_updater.config import Registry
+    from klipper_updater.flash import flash_katapult
+    from klipper_updater.settings import Settings
+
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)
+    with open(paths.config_file("bttebb36", "klipper"), "w", encoding="utf-8") as fh:
+        fh.write("CONFIG_MACH_STM32=y\n")
+
+    # flash_katapult checks for flashtool.py before anything else, even in a dry
+    # run - a rehearsal of a flash that could not happen is not a useful rehearsal.
+    os.makedirs(os.path.join(paths.home, "katapult", "scripts"), exist_ok=True)
+    with open(paths.flashtool, "w", encoding="utf-8") as fh:
+        fh.write("# stub\n")
+
+    real = dataclasses.replace(Settings(), service_backend="null", clean_before_build=False)
+    dry = dataclasses.replace(real, dry_run=True)
+    build(paths, Registry.load(paths), dry, "bttebb36", "klipper")
+
+    # A dry-run flash deliberately writes no record: nothing was written to a board.
+    serial = "290055001850304158373620-if00"
+    make_device(pathlib.Path(paths.serial_by_id), "katapult", "stm32g0b1xx", serial)
+    flash_katapult(paths, dry, "bttebb36", "stm32g0b1xx", serial)
+    assert FlashLog(paths).all() == {}, "a rehearsal must not claim to have flashed anything"

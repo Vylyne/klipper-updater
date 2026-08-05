@@ -365,6 +365,12 @@ class BuildResult:
     duration: float
     fw_sha: Optional[str]
     config_sha256: Optional[str]
+    #: sha256 of the binary that was staged. The one piece of provenance a board
+    #: cannot report: it tells us its klipper commit, so two builds from the same
+    #: commit with different .config or makefile patches are indistinguishable
+    #: from the board's side. Comparing this against what was last flashed is what
+    #: makes "only flash the stale ones" true rather than approximately true.
+    bin_sha256: Optional[str] = None
     #: True if `make` rewrote our .config (klipper runs olddefconfig when
     #: src/Kconfig is newer than the config, e.g. right after a git pull).
     config_rewritten: bool = False
@@ -373,6 +379,7 @@ class BuildResult:
         return {
             "fw_sha": self.fw_sha,
             "config_sha256": self.config_sha256,
+            "bin_sha256": self.bin_sha256,
             "duration": round(self.duration, 2),
             "timestamp": time.time(),
             "config_rewritten": self.config_rewritten,
@@ -583,6 +590,7 @@ def build(
         duration=duration,
         fw_sha=git_head(fw_dir),
         config_sha256=config_after,
+        bin_sha256=_sha256_file(bin_out),
         config_rewritten=rewritten,
     )
     try:
@@ -592,3 +600,106 @@ def build(
         reporter("warn", f"could not write build sidecar: {exc}")
 
     return result
+
+
+# --------------------------------------------------------------------------
+# flash provenance
+# --------------------------------------------------------------------------
+
+
+class FlashLog:
+    """What was last written to each board, and from which binary.
+
+    The gap this closes: a board reports its klipper *commit* and nothing else, so
+    two builds from the same commit - a changed ``.config``, an edited
+    ``makefile_patches`` source - are indistinguishable from the board's side. A
+    version comparison therefore cannot tell you that a board is running last
+    week's buffer patch, and "flash only the stale ones" would quietly skip exactly
+    the boards that needed it.
+
+    Recording the binary's sha256 against the serial closes that: once a rebuild
+    changes the artifact, every board that still holds the old one is identifiable.
+
+    It is *our* record rather than the board's truth, so it is only ever used to
+    add confidence, never to remove it. A board flashed by hand outside this tool
+    leaves an entry that disagrees with the board's running commit, and
+    :meth:`entry_for` discards it rather than reporting a stale answer with a
+    straight face.
+    """
+
+    def __init__(self, paths: Paths) -> None:
+        self.path = paths.flashlog_file
+
+    def _read(self) -> dict[str, Any]:
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def all(self) -> dict[str, Any]:
+        """Every record. A corrupt or missing file reads as empty, never raises -
+        losing this degrades the answer to "unknown", which is survivable."""
+        return self._read()
+
+    def entry_for(self, serial: str, running_sha: Optional[str]) -> Optional[dict[str, Any]]:
+        """Our record for a serial, if it is still believable.
+
+        Discarded when the board's running commit disagrees with what we recorded
+        flashing: something else has written to that board since, so our note about
+        which binary it holds is no longer evidence of anything.
+        """
+        entry = self._read().get(serial)
+        if not isinstance(entry, dict):
+            return None
+        recorded = entry.get("fw_sha")
+        if running_sha and isinstance(recorded, str) and recorded:
+            if not recorded.startswith(running_sha):
+                return None
+        return entry
+
+    def record(
+        self,
+        serial: str,
+        *,
+        mcu_type: str,
+        fw: str,
+        bin_sha256: Optional[str],
+        fw_sha: Optional[str],
+    ) -> None:
+        """Note a completed flash. Never raises - a lost record is not worth
+        failing a flash that already succeeded."""
+        data = self._read()
+        data[serial] = {
+            "type": mcu_type,
+            "fw": fw,
+            "bin_sha256": bin_sha256,
+            "fw_sha": fw_sha,
+            "at": time.time(),
+        }
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, sort_keys=True)
+            # Atomic, so a status read concurrent with a flash never sees a
+            # half-written file - which would read as corrupt and lose every record.
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
+    def forget(self, serial: str) -> bool:
+        """Drop a record, for when a board stops being tracked."""
+        data = self._read()
+        if serial not in data:
+            return False
+        del data[serial]
+        try:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, sort_keys=True)
+            os.replace(tmp, self.path)
+        except OSError:
+            return False
+        return True

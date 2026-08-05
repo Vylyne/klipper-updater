@@ -22,7 +22,14 @@ from typing import Any, Callable, Optional
 from .. import API_VERSION, __version__
 from ..build import read_sidecar, staleness
 from ..config import Registry
-from ..devices import BusDevice, device_state, parse_entry, scan
+from ..devices import (
+    STATE_KATAPULT,
+    STATE_OFFLINE,
+    BusDevice,
+    device_state,
+    parse_entry,
+    scan,
+)
 from ..errors import SerialTrackedElsewhereError, UpdaterError
 from ..paths import FW_TARGETS, REENUMERATE_TIMEOUT, Paths
 from ..settings import Settings, load_settings, save_settings
@@ -204,11 +211,27 @@ class Api:
         if fw_head is None:
             fw_head = git_head(self.paths.fw_dir("klipper"))
 
+        # Read once per type, not per board: it is one small file, but a ten-board
+        # type would otherwise open it ten times.
+        from ..build import FlashLog
+
+        flashlog = FlashLog(self.paths)
+        artifact_sha = (read_sidecar(self.paths, name, "klipper") or {}).get("bin_sha256")
+
         serials = []
         for serial in mcu.serials:
             state, path = device_state(self.paths, mcu.chipset, serial)
             entry = {"serial": serial, "state": state, "path": path}
-            entry.update(self.flash_state(serial, versions, fw_head))
+            entry.update(
+                self.flash_state(
+                    serial,
+                    versions,
+                    fw_head,
+                    state=state,
+                    artifact_sha=artifact_sha,
+                    flashlog=flashlog,
+                )
+            )
             serials.append(entry)
 
         out: dict[str, Any] = {
@@ -1129,33 +1152,81 @@ class Api:
         return out
 
     def flash_state(
-        self, serial: str, info: dict[str, dict[str, str]], fw_head: Optional[str]
+        self,
+        serial: str,
+        info: dict[str, dict[str, str]],
+        fw_head: Optional[str],
+        *,
+        state: Optional[str] = None,
+        artifact_sha: Optional[str] = None,
+        flashlog: Optional[Any] = None,
     ) -> dict[str, Any]:
-        """Whether this board is running the firmware the source tree would build.
+        """Whether this board wants flashing, and why.
 
-        `None` for "cannot tell" rather than False, because an offline board or an
-        unreachable Klippy is not evidence that a board is current - and reporting
-        "up to date" without having checked is exactly the bug this fixes.
+        `needs_flash` is None for "cannot tell" rather than False: an offline board
+        or an unreachable Klippy is not evidence that a board is current, and
+        claiming otherwise is the bug this whole area exists to fix.
+
+        `reason` is the useful part, because the answers are not equivalent:
+
+        ``in_bootloader``
+            Sitting in Katapult, so it reports no klipper version at all. That is
+            not "unknown" - a board waiting in its bootloader is the strongest
+            possible signal that it wants firmware.
+        ``source_changed``
+            Running an older klipper commit than the source tree.
+        ``artifact_changed``
+            Same commit, different binary. This is the one a version comparison
+            structurally cannot see: an edited makefile-patch source or a changed
+            .config produces a different build from an identical commit, and the
+            board cannot tell us which one it holds. Only our own flash record can.
+        ``offline`` / ``unknown_version``
+            Genuinely no answer.
         """
         entry = info.get(serial) or {}
         version = entry.get("version")
         mcu = entry.get("mcu")
         running = _running_sha(version or "")
-        if version is None:
-            return {"mcu": mcu, "running_version": None, "running_sha": None, "needs_flash": None}
-        if running is None or not fw_head:
-            # Running something we cannot pin to a commit - a hand-built firmware,
-            # or a klipper checkout with no git metadata.
-            return {"mcu": mcu, "running_version": version, "running_sha": None, "needs_flash": None}
-        # `-dirty` is normal here and must not read as a mismatch: a type with
-        # makefile patches is dirty by construction, because the patch is in place
-        # while klipper stamps its version.
-        return {
+        out: dict[str, Any] = {
             "mcu": mcu,
             "running_version": version,
             "running_sha": running,
-            "needs_flash": not fw_head.startswith(running),
+            "needs_flash": None,
+            "reason": None,
         }
+
+        if state == STATE_OFFLINE:
+            out["reason"] = "offline"
+            return out
+        if state == STATE_KATAPULT:
+            out["needs_flash"] = True
+            out["reason"] = "in_bootloader"
+            return out
+        if version is None or running is None or not fw_head:
+            out["reason"] = "unknown_version"
+            return out
+
+        # `-dirty` is normal and must not read as a mismatch: a type with makefile
+        # patches is dirty by construction, because the patch is in place while
+        # klipper stamps its version.
+        if not fw_head.startswith(running):
+            out["needs_flash"] = True
+            out["reason"] = "source_changed"
+            return out
+
+        # The commit matches, so only our own record can distinguish two builds of
+        # it. Used to *add* confidence and never to remove it: with no record, the
+        # commit match stands rather than degrading every board to unknown.
+        if flashlog is not None and artifact_sha:
+            record = flashlog.entry_for(serial, running)
+            flashed = (record or {}).get("bin_sha256")
+            if record is not None and flashed and flashed != artifact_sha:
+                out["needs_flash"] = True
+                out["reason"] = "artifact_changed"
+                return out
+
+        out["needs_flash"] = False
+        return out
 
     # -- kconfig -----------------------------------------------------------
 

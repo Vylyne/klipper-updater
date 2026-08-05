@@ -136,6 +136,23 @@ def flash_katapult(
             serial=serial,
             returncode=rc,
         )
+
+    # Note which binary this board now holds. A board only ever reports its klipper
+    # commit, so without this record two builds from the same commit - a changed
+    # .config, an edited makefile-patch source - are indistinguishable, and "flash
+    # only the stale ones" would skip exactly the boards a patch change affected.
+    if not settings.dry_run:
+        from .build import FlashLog, git_head, read_sidecar
+
+        side = read_sidecar(paths, mcu_type, "klipper") or {}
+        FlashLog(paths).record(
+            serial,
+            mcu_type=mcu_type,
+            fw="klipper",
+            bin_sha256=side.get("bin_sha256"),
+            fw_sha=side.get("fw_sha") or git_head(paths.fw_dir("klipper")),
+        )
+
     reporter("info", f"Flashed {serial} successfully.")
 
 

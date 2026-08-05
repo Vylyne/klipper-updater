@@ -123,6 +123,16 @@ class Paths:
         return os.path.join(self.data_dir, ".registry.lock")
 
     @property
+    def flashlog_file(self) -> str:
+        """Which binary was last written to each board.
+
+        In the data tree rather than config: it is a record of what happened, not
+        something anyone hand-edits, and it is regenerable in the sense that losing
+        it degrades answers to "unknown" rather than breaking anything.
+        """
+        return os.path.join(self.data_dir, ".flashed.json")
+
+    @property
     def journal_file(self) -> str:
         """Records "klipper was stopped by us" so a crashed run can be reconciled."""
         return os.path.join(self.data_dir, ".updater.state")
