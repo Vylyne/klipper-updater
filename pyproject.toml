@@ -26,6 +26,10 @@ where = ["src"]
 [tool.ruff]
 target-version = "py39"
 line-length = 110
+# Third-party code vendored verbatim as a test fixture. Linting it reports 125
+# problems that are not ours, and `--fix` would silently rewrite upstream source -
+# which would defeat the point of testing against the real library.
+extend-exclude = ["tests/fixtures/kconfiglib"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]

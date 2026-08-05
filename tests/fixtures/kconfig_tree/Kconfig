@@ -1,0 +1,68 @@
+# A deliberately small stand-in for Klipper's src/Kconfig.
+#
+# Small, but not simple: every construct here exists to exercise a behaviour the
+# serializer has to get right, rather than to look like a real config.
+
+mainmenu "Test Firmware Configuration"
+
+choice
+    prompt "Micro-controller Architecture"
+    default MACH_STM32
+
+config MACH_STM32
+    bool "STMicroelectronics STM32"
+
+config MACH_RP2040
+    bool "Raspberry Pi RP2040"
+
+endchoice
+
+# Flipping the choice above must flip `visible` on everything below that depends
+# on it - which is the whole reason dependency evaluation is left to kconfiglib.
+config STM32_CLOCK_REF
+    int "Crystal frequency (MHz)"
+    default 8
+    range 4 32
+    depends on MACH_STM32
+
+config RP2040_FLASH_SIZE
+    int "Flash size (KiB)"
+    default 2048
+    depends on MACH_RP2040
+
+menu "Communication interface"
+
+config USBSERIAL
+    bool "Use USB for communication"
+    default y
+
+# `select` makes a symbol non-assignable while the selector is on. The serializer
+# reports `assignable` from kconfiglib rather than inferring it, so this is what
+# proves the difference between "off" and "cannot be changed".
+config USB_VENDOR_ID
+    hex "USB vendor ID"
+    default 0x1d50
+    depends on USBSERIAL
+
+config WANT_USB
+    bool "Something that needs USB"
+    select USBSERIAL
+
+config SERIAL_BAUD
+    int "Serial baud rate"
+    default 250000
+    range 1200 1000000
+    depends on !USBSERIAL
+
+endmenu
+
+config BOARD_NAME
+    string "Board display name"
+    default "testboard"
+
+config WITH_HELP
+    bool "A symbol that has help text"
+    help
+      This help text exists so `has_help` can be asserted as true for one symbol
+      and false for the others. Help is excluded from tree payloads because
+      Klipper's full text is several hundred KB.
