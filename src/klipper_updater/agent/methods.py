@@ -1052,6 +1052,7 @@ class Api:
         "fw.build_all": "build_all",
         "fw.flash_all": "flash_all",
         "fw.update_all": "update_all",
+        "fw.add_mcu.start": "add_mcu_start",
         "fw.serial.add": "serial_add",
         "fw.serial.remove": "serial_remove",
         "fw.type.add": "type_add",
@@ -1079,11 +1080,14 @@ class Api:
         "fw.build_all",
         "fw.flash_all",
         "fw.update_all",
+        "fw.add_mcu.start",
     )
 
     #: Advertised only when enable_flashing is on. The panel hides its flash
     #: buttons accordingly, rather than offering something that gets refused.
-    FLASH_METHODS = ("fw.flash", "fw.flash_all", "fw.update_all")
+    #: add_mcu.start writes a bootloader to a board, so it belongs here too - even
+    #: though the board is not yet one of ours.
+    FLASH_METHODS = ("fw.flash", "fw.flash_all", "fw.update_all", "fw.add_mcu.start")
 
     def available_methods(self) -> dict[str, str]:
         out = dict(self.METHODS)
@@ -1130,8 +1134,9 @@ class Api:
         ``none``
             Genuinely nothing in DFU. Fit the boot jumper and replug.
         ``ambiguous``
-            More than one board in DFU. dfu-util addresses by VID:PID only, so
-            there is no way to say which one is meant - unplug the others.
+            More than one board in DFU, and no serial was named to pick between
+            them. Not a dead end: dfu-util takes `-S/-p/-n`, so naming one is
+            enough - `ready` is false only because the *caller* has not chosen.
         """
         from ..flash import DFU_VID_PID, dfu_devices
 
@@ -1175,14 +1180,155 @@ class Api:
         if len(devices) > 1:
             out["reason"] = self.DFU_AMBIGUOUS
             out["message"] = (
-                f"{len(devices)} boards are in DFU mode. dfu-util can only address "
-                f"them by USB id, so there is no way to say which one is meant - "
-                f"unplug all but the target board."
+                f"{len(devices)} boards are in DFU mode. Pick the one to flash by its "
+                f"serial, or unplug the others."
             )
             return out
 
         out["ready"] = True
         return out
+
+    #: How long to wait for a freshly-flashed board to come back as Katapult.
+    #: A class attribute so tests can shrink it without patching a call site,
+    #: matching KLIPPY_READY_TIMEOUT and friends.
+    ADD_MCU_REENUMERATE_TIMEOUT = float(REENUMERATE_TIMEOUT)
+
+    def add_mcu_start(self, args: dict) -> dict[str, Any]:
+        """Put Katapult on a board in DFU, then report what appeared on the bus.
+
+        The one new method the guided flow needs. Adopting the result is
+        `fw.serial.add` and putting Klipper on it is `fw.flash` - both already
+        exist, and wrapping them here would be a second implementation to keep in
+        step with the first.
+
+        **A DFU board has no identity to adopt.** It exposes no
+        `/dev/serial/by-id` name at all, so there is nothing to put in the
+        registry until Katapult is on it and it re-enumerates. That is why this
+        snapshots the bus first and diffs afterwards, rather than taking a serial
+        as an argument: the serial does not exist yet.
+
+        **Klipper is not stopped.** A board that is not in printer.cfg is not held
+        by Klipper, so there is no port contention and no reason for an outage -
+        the CLI's add-mcu has never stopped it either. The exclusive lock is still
+        taken, so this cannot run beside a build or a flash.
+        """
+        runner = self._require_runner()
+        settings = self.settings()
+
+        if not settings.enable_flashing:
+            raise RpcError(
+                "flashing from the web UI is disabled, so a new board cannot be "
+                f"set up. Set 'enable_flashing = true' in {self.paths.settings_file}.",
+                data={
+                    "code": "flashing_disabled",
+                    "message": "enable_flashing is false",
+                    "data": {"settings_file": self.paths.settings_file},
+                },
+            )
+
+        name = self._require_str(args, "name")
+        reg = self.registry()
+        mcu = reg.get(name)  # unknown_type, before a job exists
+
+        # Only STM32 has a DFU path. RP2040 needs BOOTSEL mass storage and a .uf2,
+        # which is a different mechanism entirely - say so precisely rather than
+        # failing inside the job with something about dfu-util.
+        if not mcu.chipset.startswith("stm32"):
+            raise RpcError(
+                f"{name} is {mcu.chipset}, which does not use DFU. Only STM32 boards "
+                f"can be set up this way.",
+                data={
+                    "code": "unsupported_chipset",
+                    "message": "no DFU path for this chipset",
+                    "data": {"type": name, "chipset": mcu.chipset},
+                },
+            )
+
+        katapult_bin = self.paths.bin_file(name, "katapult")
+        if not os.path.exists(katapult_bin):
+            raise RpcError(
+                f"no built Katapult firmware for {name}. Build it first - this flow "
+                f"installs the bootloader, so the bootloader has to exist.",
+                data={
+                    "code": "no_artifact",
+                    "message": "katapult has not been built for this type",
+                    "data": {"type": name, "fw": "katapult", "path": katapult_bin},
+                },
+            )
+
+        # Which board, decided here rather than in the job, so an ambiguous bus is
+        # a synchronous refusal the caller can act on instead of a job that dies.
+        scan = self.dfu_scan({})
+        target = args.get("dfu_serial")
+        if target is not None:
+            target = str(target)
+            if not any(d.get("serial") == target for d in scan["devices"]):
+                raise RpcError(
+                    f"no board with serial {target} is in DFU mode.",
+                    data={
+                        "code": "device_not_found",
+                        "message": "the named DFU device is not attached",
+                        "data": {"dfu_serial": target, "devices": scan["devices"]},
+                    },
+                )
+        elif not scan["ready"]:
+            raise RpcError(
+                scan["message"] or "no board is ready in DFU mode.",
+                data={
+                    "code": f"dfu_{scan['reason']}",
+                    "message": scan["message"],
+                    "data": {"devices": scan["devices"], "reason": scan["reason"]},
+                },
+            )
+        else:
+            target = scan["devices"][0].get("serial")
+
+        # Everything on the bus now, tracked or not, so the diff afterwards finds
+        # exactly the board this flashed - and not one someone else plugged in.
+        from ..devices import find_untracked
+
+        known = set(reg.all_serials())
+        before = known | {d.serial for d in find_untracked(self.paths, known)}
+
+        def run(ctx) -> dict[str, Any]:
+            from ..flash import adoptable_devices, flash_initial_bootloader
+
+            ctx.step(f"Flashing Katapult onto the DFU board for {name}", 0, 2)
+            flash_initial_bootloader(
+                self.paths,
+                self.settings(),
+                mcu.chipset,
+                katapult_bin,
+                reporter=ctx.reporter,
+                target_serial=target,
+            )
+
+            ctx.step("Waiting for the board to re-enumerate as Katapult", 1, 2)
+            candidates = adoptable_devices(
+                self.paths, before, mcu.chipset, timeout=self.ADD_MCU_REENUMERATE_TIMEOUT
+            )
+            ctx.step(f"Found {len(candidates)} new board(s)", 2, 2)
+
+            if not candidates:
+                # Not raised: the write may well have succeeded and the board may
+                # simply be slow, on a marginal port, or already tracked. Saying
+                # what to look at beats failing a job that probably worked.
+                ctx.reporter(
+                    "warn",
+                    "No new Katapult device appeared. Check `ls /dev/serial/by-id/` - "
+                    "if it is there, adopt it directly with fw.serial.add.",
+                )
+            return {
+                "type": name,
+                "chipset": mcu.chipset,
+                "dfu_serial": target,
+                "candidates": [
+                    {"serial": d.serial, "path": d.path, "state": d.state} for d in candidates
+                ],
+            }
+
+        job = runner.submit("add_mcu", {"name": name, "dfu_serial": target}, run)
+        return {"job_id": job.id, "job": job.to_dict(), "type": name, "dfu_serial": target}
 
     # -- bulk operations ----------------------------------------------------
 

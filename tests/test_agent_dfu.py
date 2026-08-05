@@ -157,17 +157,24 @@ def test_nothing_in_dfu_says_to_fit_the_jumper(api, monkeypatch):
     assert "jumper" in (res["message"] or "").lower()
 
 
-def test_two_boards_is_refused_because_dfu_has_no_addressing(api, monkeypatch):
-    """dfu-util targets a VID:PID and nothing else, so with two boards attached
-    it would flash whichever answered first."""
+def test_two_boards_is_not_ready_until_one_is_chosen(api, monkeypatch):
+    """`ready` is false because the CALLER has not chosen, not because it cannot
+    be done - dfu-util takes -S/-p/-n and can target one exactly.
+
+    Refusing by default is still right. A USB serial like "3941335F3434" says
+    nothing about which board on the bench it is, so choosing on the user's behalf
+    risks writing a bootloader to the wrong one.
+    """
     patch_dfu(monkeypatch, stdout=TWO_BOARDS)
     res = api.dispatch("fw.dfu.scan")
 
     assert res["reason"] == "ambiguous"
     assert res["ready"] is False
     assert res["count"] == 2
-    # Both are listed: the user has to work out which to unplug.
+    # Both are listed with their bus paths - the only field corresponding to a
+    # physical port, and so the only hint about which board is which.
     assert len(res["devices"]) == 2
+    assert all(d["path"] for d in res["devices"])
 
 
 def test_the_probe_never_raises_whatever_dfu_util_does(api, monkeypatch):
@@ -192,3 +199,83 @@ def test_the_probe_is_available_to_a_read_only_agent(api):
     seen is exactly what someone with a read-only install needs."""
     caps = api.dispatch("fw.ping")["capabilities"]
     assert "fw.dfu.scan" in caps
+
+
+# --------------------------------------------------------------------------
+# targeting one board among several
+#
+# dfu-util takes -S/-p/-n, so several boards in DFU is a choice rather than the
+# dead end an earlier version of this claimed. It stays a refusal by DEFAULT,
+# because knowing which physical board a USB serial belongs to is the hard part.
+# --------------------------------------------------------------------------
+
+
+def test_a_lone_board_is_still_pinned_by_serial(monkeypatch):
+    """Not belt-and-braces: between the scan and the write, someone can jumper a
+    second board and plug it in. Targeting the VID:PID alone would then take
+    whichever answered first."""
+    from klipper_updater.flash import dfu_selector
+
+    patch_dfu(monkeypatch, stdout=ONE_BOARD)
+    assert dfu_selector(dfu_devices()[0]) == ["-S", "3941335F3434"]
+
+
+def test_the_selector_degrades_by_how_well_each_field_survives():
+    """Serial comes from the die's unique id and survives a replug; a bus path
+    holds only while the board stays in one port; devnum changes every time."""
+    from klipper_updater.flash import dfu_selector
+
+    assert dfu_selector({"serial": "ABC", "path": "6-1", "devnum": "9"}) == ["-S", "ABC"]
+    assert dfu_selector({"serial": None, "path": "6-1", "devnum": "9"}) == ["-p", "6-1"]
+    assert dfu_selector({"serial": None, "path": None, "devnum": "9"}) == ["-n", "9"]
+    assert dfu_selector({"serial": None, "path": None, "devnum": None}) == []
+
+
+def _staged_bin(paths) -> str:
+    path = str(paths.home) + "/katapult.bin"
+    with open(path, "wb") as fh:
+        fh.write(b"\0" * 16)
+    return path
+
+
+def test_two_boards_with_no_choice_made_is_refused(paths, monkeypatch, settings):
+    from klipper_updater.errors import AmbiguousDfuError
+    from klipper_updater.flash import flash_dfu_stm32
+
+    patch_dfu(monkeypatch, stdout=TWO_BOARDS)
+    with pytest.raises(AmbiguousDfuError) as exc:
+        flash_dfu_stm32(paths, settings, _staged_bin(paths))
+    # It must say naming one is possible, not merely "unplug the others".
+    assert "serial" in str(exc.value)
+
+
+def test_naming_a_serial_resolves_two_boards(paths, monkeypatch, settings):
+    """The case a second board on the bench tests."""
+    from klipper_updater.flash import flash_dfu_stm32
+
+    patch_dfu(monkeypatch, stdout=TWO_BOARDS)
+    commands = []
+    monkeypatch.setattr(
+        "klipper_updater.flash.run_streamed",
+        lambda cmd, **kw: commands.append(cmd) or 0,
+    )
+    settings.dry_run = False
+    flash_dfu_stm32(paths, settings, _staged_bin(paths), target_serial="205B33753539")
+
+    assert len(commands) == 1
+    cmd = commands[0]
+    assert cmd[cmd.index("-S") + 1] == "205B33753539"
+    # The altsetting stays pinned by NUMBER. All three altsettings on a G0B1
+    # report the same name, so matching on the name would be the ambiguous one.
+    assert cmd[cmd.index("-a") + 1] == "0"
+
+
+def test_naming_a_serial_that_is_not_there_is_refused(paths, monkeypatch, settings):
+    """Rather than falling back to "the only one attached" - which is precisely
+    how you flash the board you were trying not to."""
+    from klipper_updater.errors import DeviceNotFoundError
+    from klipper_updater.flash import flash_dfu_stm32
+
+    patch_dfu(monkeypatch, stdout=ONE_BOARD)
+    with pytest.raises(DeviceNotFoundError):
+        flash_dfu_stm32(paths, settings, _staged_bin(paths), target_serial="NOTHERE")

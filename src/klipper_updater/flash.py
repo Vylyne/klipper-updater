@@ -304,38 +304,82 @@ def wait_for_dfu(
         time.sleep(poll)
 
 
+def dfu_selector(device: dict) -> list[str]:
+    """dfu-util arguments pinning a write to one physical board.
+
+    Preference order is by how well each field survives: the STM32 USB serial is
+    derived from the die's unique ID and is stable across replugs, the bus path
+    only holds while the board stays in the same port, and devnum changes every
+    time it enumerates. All three beat targeting the VID:PID alone, which picks
+    whichever board answers first.
+    """
+    if device.get("serial"):
+        return ["-S", str(device["serial"])]
+    if device.get("path"):
+        return ["-p", str(device["path"])]
+    if device.get("devnum"):
+        return ["-n", str(device["devnum"])]
+    return []
+
+
 def flash_dfu_stm32(
     paths: Paths,
     settings: Settings,
     fw_bin: str,
     *,
     reporter: Reporter = null_reporter,
+    target_serial: Optional[str] = None,
 ) -> None:
     """Write a .bin to an STM32 sitting in DFU mode.
 
-    Refuses when more than one DFU device is present. The original targeted
-    ``0483:df11`` unconditionally, so with two boards in DFU - or an unrelated
-    STM32 dev board plugged in - it would flash whichever answered first.
+    With several boards in DFU, `target_serial` says which one; without it, this
+    refuses rather than guessing. The original targeted ``0483:df11``
+    unconditionally, so with two boards attached - or an unrelated STM32 dev board
+    plugged in - it flashed whichever answered first.
+
+    Note `-a 0` is deliberately by number and not by name. It looks like the
+    fragile choice, and is in fact the robust one: an STM32G0B1 reports the *same*
+    name ("@Internal Flash /0x08000000/64*02Kg") for all three of its altsettings,
+    so matching on the name would be the ambiguous option.
     """
     if not os.path.exists(fw_bin):
         raise FlashError(f"firmware binary not found at {fw_bin}.", path=fw_bin)
 
     reporter("info", "Looking for an STM32 device in DFU mode via dfu-util...")
-    found = list_dfu_devices(reporter=reporter)
-    for line in found:
-        reporter("info", f"  {line}")
+    devices = dfu_devices(reporter=reporter)
+    for device in devices:
+        reporter("info", f"  {device['raw']}")
+    found = [str(d["raw"]) for d in devices]
 
     if not found:
         raise DeviceNotFoundError(
             "no DFU device detected. Hold BOOT0 (or fit the boot jumper) and replug "
             "the board, then try again."
         )
-    if len(found) > 1:
+
+    if target_serial is not None:
+        matches = [d for d in devices if d.get("serial") == target_serial]
+        if not matches:
+            raise DeviceNotFoundError(
+                f"no DFU device with serial {target_serial} is attached. It may have "
+                f"been unplugged, or left DFU mode.",
+                serial=target_serial,
+            )
+        chosen = matches[0]
+    elif len(devices) > 1:
         raise AmbiguousDfuError(
-            f"{len(found)} devices are in DFU mode - refusing to guess which one to "
-            f"flash. Unplug all but the target board and try again.",
+            f"{len(devices)} devices are in DFU mode - refusing to guess which one to "
+            f"flash. Name one by its serial, or unplug all but the target board.",
             devices=found,
         )
+    else:
+        chosen = devices[0]
+
+    # Always pin the write, even for a lone board: between the scan above and the
+    # command below, a second board could be jumpered and plugged in.
+    selector = dfu_selector(chosen)
+    if selector:
+        reporter("info", f"Targeting {selector[0]} {selector[1]}")
 
     reporter("info", "DFU device found. Flashing via dfu-util...")
 
@@ -354,6 +398,7 @@ def flash_dfu_stm32(
             "0",
             "-d",
             DFU_VID_PID,
+            *selector,
             "-D",
             fw_bin,
             "-s",
@@ -394,10 +439,11 @@ def flash_initial_bootloader(
     fw_bin: str,
     *,
     reporter: Reporter = null_reporter,
+    target_serial: Optional[str] = None,
 ) -> None:
     """Dispatch a first-time katapult install by chipset family."""
     if chipset.startswith("stm32"):
-        flash_dfu_stm32(paths, settings, fw_bin, reporter=reporter)
+        flash_dfu_stm32(paths, settings, fw_bin, reporter=reporter, target_serial=target_serial)
         return
     if chipset == "rp2040":
         # Wired up in a later phase: BOOTSEL mass storage only accepts .uf2, so

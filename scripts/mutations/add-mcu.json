@@ -1,0 +1,39 @@
+{
+  "_comment": "Phase 6 guards. Each one refuses before a job exists, or picks the right board.",
+  "file": "src/klipper_updater/agent/methods.py",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "tests/test_agent_add_mcu.py",
+    "tests/test_agent_dfu.py",
+    "-q"
+  ],
+  "mutations": [
+    {
+      "name": "katapult artifact must exist",
+      "find": "        if not os.path.exists(katapult_bin):",
+      "replace": "        if False:"
+    },
+    {
+      "name": "non-stm32 is refused",
+      "find": "        if not mcu.chipset.startswith(\"stm32\"):",
+      "replace": "        if False:"
+    },
+    {
+      "name": "ambiguous DFU is refused when no serial is named",
+      "find": "        elif not scan[\"ready\"]:",
+      "replace": "        elif False:"
+    },
+    {
+      "name": "a named serial must actually be in DFU",
+      "find": "            if not any(d.get(\"serial\") == target for d in scan[\"devices\"]):",
+      "replace": "            if False:"
+    },
+    {
+      "name": "the bus is snapshotted BEFORE the write",
+      "find": "        known = set(reg.all_serials())\n        before = known | {d.serial for d in find_untracked(self.paths, known)}",
+      "replace": "        known = set(reg.all_serials())\n        before = set()"
+    }
+  ]
+}

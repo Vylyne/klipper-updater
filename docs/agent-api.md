@@ -82,6 +82,8 @@ application error (see `data.code`), `-32603` internal.
 | `fw.status` | — | everything the panel needs, in one call |
 | `fw.type.list` | — | `{types: [TypeStatus]}` |
 | `fw.bus.scan` | `only_untracked?`, `chipset?` | `{devices: [BusDevice]}` |
+| `fw.dfu.scan` | — | `{devices, count, ready, reason, message}` — read-only |
+| `fw.add_mcu.start` | `name`, `dfu_serial?` | `{job_id, job, dfu_serial}` — **off by default** |
 | `fw.artifacts` | `name` (required) | `{klipper: Artifact, katapult: Artifact}` |
 | `fw.settings.get` | — | `{settings: Settings}` |
 | `fw.build` | `name`, `fw`, `jobs?`, `clean?` | `{job_id, job}` — returns immediately |
@@ -415,6 +417,94 @@ Each board is also waited for individually after its write, exactly as in a sing
 flash: the last board of a batch would otherwise have nothing between its write
 and the service restart.
 
+### Setting up a brand-new board
+
+A board with no bootloader on it is reached over **DFU**, and the whole flow is
+four calls of which only one is new:
+
+| Step | Call | New? |
+| --- | --- | --- |
+| 1. What is in DFU? | `fw.dfu.scan` | new, read-only |
+| 2. Put Katapult on it | `fw.add_mcu.start {name}` | **new** |
+| 3. Adopt what appeared | `fw.serial.add {name, serial}` | existing |
+| 4. Put Klipper on it | `fw.flash {serial}` | existing |
+
+There is no `fw.add_mcu.confirm`. Adopting the board is exactly what
+`fw.serial.add` already does, validation included, so a confirm method would be a
+second implementation to keep in step with the first — the same reason
+`fw.flash_type` is just `fw.flash_all {name}`.
+
+#### `fw.dfu.scan`
+
+Reports rather than raises, because describing the situation *is* the work here.
+`ready` is true only when exactly one board is present and openable.
+
+| `reason` | What it means, and what to do |
+| --- | --- |
+| `null` | Ready. One board, openable. |
+| `no_tool` | `apt install dfu-util`. Nothing to do with the board. |
+| `permission_denied` | libusb saw a board and could not claim it. **The boot jumper worked** — this is the udev rule, not the hardware. |
+| `none` | Nothing in DFU. Fit the jumper and replug. |
+| `ambiguous` | More than one, and none named. Not a dead end — see below. |
+
+`permission_denied` is kept apart from `none` deliberately. Collapsing them is
+what once told a user "no DFU device detected, hold BOOT0 and replug" when the
+board was sitting there perfectly, sending them to redo the one step that had
+worked.
+
+Each device carries `serial`, `path`, `devnum` and the raw line. A DFU board
+exposes no `/dev/serial/by-id` name, so those are the only identity it has.
+**`path` is the one to show prominently** — it is the only field corresponding to
+a physical port, and therefore the only hint about which board is which.
+
+#### `fw.add_mcu.start`
+
+Writes Katapult to the board in DFU, waits for it to re-enumerate, and reports
+what appeared:
+
+```json
+{"type": "bttebb36", "chipset": "stm32g0b1xx", "dfu_serial": "3941335F3434",
+ "candidates": [{"serial": "2D0043...-if00", "path": "/dev/serial/by-id/...",
+                 "state": "katapult"}]}
+```
+
+**It cannot take a serial for the new board, because there isn't one yet.** A DFU
+device has no by-id name, so the identity to adopt does not exist until Katapult
+is on it. That is why this snapshots the bus first and diffs afterwards.
+
+**Klipper is never stopped.** A board that is not in `printer.cfg` is not held by
+Klipper, so there is no port contention and no reason for an outage. The
+exclusive lock is still taken, so it cannot run beside a build or a flash.
+
+Refusals, all synchronous and before a job exists:
+
+| Check | Error code |
+| --- | --- |
+| capability gate | `flashing_disabled` |
+| type exists | `unknown_type` |
+| chipset uses DFU at all | `unsupported_chipset` (RP2040 needs BOOTSEL + `.uf2`) |
+| Katapult has been built for the type | `no_artifact` |
+| something is in DFU | `dfu_none` / `dfu_permission_denied` / `dfu_no_tool` |
+| exactly one, or one named | `dfu_ambiguous` |
+| the named serial is present | `device_not_found` |
+
+**Several boards in DFU is a choice, not a dead end.** dfu-util takes `-S`, `-p`
+and `-n`, so passing `dfu_serial` targets one exactly. It is still refused by
+default: a USB serial like `3941335F3434` says nothing about which board on the
+bench it is, so choosing on the user's behalf risks writing a bootloader to the
+wrong one.
+
+The write is pinned to the chosen device even when only one is attached — between
+the scan and the command, a second board can be jumpered and plugged in.
+
+Finding no new board **warns rather than failing the job**: the write may have
+succeeded and the board simply be slow or on a marginal port, so the log says to
+check `/dev/serial/by-id` and adopt directly.
+
+Only STM32 is supported. RP2040 needs BOOTSEL mass storage and a `.uf2`, which is
+a different mechanism; `unsupported_chipset` says so rather than failing later
+with something about dfu-util.
+
 ### The log, and its sequence numbers
 
 Every log line gets a monotonic index, starting at 0. A `log` event carries the
@@ -492,11 +582,12 @@ No polling needed:
 
 ## Later phases
 
-Reserved names, not yet implemented — the agent returns `-32601` for these and
-does not advertise them, which is why the panel gates on `capabilities`:
+Nothing is reserved any more — `fw.add_mcu.start` shipped, and it was the last
+one. See "Setting up a brand-new board" above.
 
-`fw.add_mcu.start`, `fw.add_mcu.confirm` — the guided flow for a brand-new board
-that has no Katapult on it yet, and so has to be reached over DFU.
+**`fw.add_mcu.confirm` was never implemented and never will be**, for the same
+reason as `fw.flash_type`: adopting the board is `fw.serial.add`, which already
+does it with the validation.
 
 **`fw.flash_type` was never implemented and never will be.** It is
 `fw.flash_all {name}`: the same selection and the same loop with a filter, rather

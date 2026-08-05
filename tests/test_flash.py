@@ -96,30 +96,46 @@ def test_device_running_klipper_gets_a_bootloader_request_first(paths, ready, fa
 # --------------------------------------------------------------------------
 
 
+def _dfu(serial=None, path="1-1.2", devnum="51"):
+    """A parsed DFU device, as `dfu_devices` now returns them."""
+    return {
+        "vidpid": "0483:df11",
+        "serial": serial,
+        "path": path,
+        "devnum": devnum,
+        "raw": f"Found DFU: [0483:df11] ... path={path}",
+    }
+
+
 def test_no_dfu_device_raises(paths, ready, monkeypatch):
-    monkeypatch.setattr(flash_mod, "list_dfu_devices", lambda **kw: [])
+    monkeypatch.setattr(flash_mod, "dfu_devices", lambda **kw: [])
     with pytest.raises(DeviceNotFoundError):
         flash_dfu_stm32(paths, ready, str(paths.bin_file("board", "klipper")))
 
 
 def test_multiple_dfu_devices_are_refused(paths, ready, monkeypatch):
     """The original targeted 0483:df11 unconditionally, so with two boards in DFU
-    it would flash whichever answered first - i.e. possibly the wrong one."""
+    it would flash whichever answered first - i.e. possibly the wrong one.
+
+    Still a refusal by default even though dfu-util can target one exactly: a USB
+    serial says nothing about which board on the bench it is, so the choice has to
+    be the caller's.
+    """
     monkeypatch.setattr(
         flash_mod,
-        "list_dfu_devices",
-        lambda **kw: ["Found DFU: [0483:df11] ... path=1-1.2", "Found DFU: [0483:df11] ... path=1-1.3"],
+        "dfu_devices",
+        lambda **kw: [_dfu(path="1-1.2"), _dfu(path="1-1.3", devnum="52")],
     )
     with pytest.raises(AmbiguousDfuError) as exc:
         flash_dfu_stm32(paths, ready, str(paths.bin_file("board", "klipper")))
     assert len(exc.value.data["devices"]) == 2
-    assert "Unplug all but the target" in str(exc.value)
+    assert "unplug all but the target" in str(exc.value).lower()
+    # ...and it says the alternative, rather than only offering the blunt one.
+    assert "serial" in str(exc.value)
 
 
 def test_exactly_one_dfu_device_is_flashed(paths, ready, monkeypatch):
-    monkeypatch.setattr(
-        flash_mod, "list_dfu_devices", lambda **kw: ["Found DFU: [0483:df11] ... path=1-1.2"]
-    )
+    monkeypatch.setattr(flash_mod, "dfu_devices", lambda **kw: [_dfu()])
     events: list[tuple[str, str]] = []
     flash_dfu_stm32(
         paths,
@@ -174,11 +190,11 @@ def test_an_unknown_chipset_is_reported_clearly(paths, ready):
 
 
 # --------------------------------------------------------------------------
-# list_dfu_devices - the parser itself
+# the parser itself
 #
-# Every test above monkeypatches list_dfu_devices out, so the parsing had no
-# coverage at all. These use output captured verbatim from a real BTT EBB on a
-# Pi running dfu-util 0.11.
+# Every test above monkeypatches the listing out, so the parsing had no coverage
+# at all. These use output captured verbatim from a real BTT EBB on a Pi running
+# dfu-util 0.11.
 # --------------------------------------------------------------------------
 
 #: One physical board. dfu-util prints a line per DFU altsetting, so it is three
