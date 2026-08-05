@@ -15,13 +15,14 @@ from __future__ import annotations
 import dataclasses
 import os
 import platform
+import re
 import time
 from typing import Any, Callable, Optional
 
 from .. import API_VERSION, __version__
 from ..build import read_sidecar, staleness
 from ..config import Registry
-from ..devices import BusDevice, device_state, scan
+from ..devices import BusDevice, device_state, parse_entry, scan
 from ..errors import SerialTrackedElsewhereError, UpdaterError
 from ..paths import FW_TARGETS, REENUMERATE_TIMEOUT, Paths
 from ..settings import Settings, load_settings, save_settings
@@ -45,6 +46,30 @@ def _size(path: str) -> Optional[int]:
         return os.path.getsize(path)
     except OSError:
         return None
+
+
+#: git describe embeds the commit as a g<hex> token. Anything after it - notably
+#: `-dirty`, which a makefile-patched build always carries - is noise here.
+_FW_SHA_RE = re.compile(r"(?:^|-)g([0-9a-f]{7,40})(?:-|$)")
+
+#: The MCU object list only changes when Klipper restarts, so it is worth caching:
+#: it is a whole extra round trip and fw.status has a sub-second budget.
+MCU_NAMES_TTL = 60.0
+
+
+def _running_sha(version: str) -> Optional[str]:
+    match = _FW_SHA_RE.search(version or "")
+    return match.group(1) if match else None
+
+
+def _serial_from_path(path: str) -> Optional[str]:
+    """The serial component of a /dev/serial/by-id path.
+
+    Reuses the bus parser rather than string-slicing, so the two cannot disagree
+    about what counts as a serial.
+    """
+    parsed = parse_entry(os.path.basename(path), os.path.dirname(path))
+    return parsed.serial if parsed is not None else None
 
 
 def serialize_device(dev: BusDevice, tracked_by: Optional[str] = None) -> dict[str, Any]:
@@ -89,6 +114,9 @@ class Api:
         # Created on first kconfig call; an agent that never opens one pays
         # neither the import nor the memory.
         self._kconfig_sessions: Optional[Any] = None
+        # Cached printer-object names; see _mcu_object_names.
+        self._mcu_names: Optional[list[str]] = None
+        self._mcu_names_at = 0.0
 
     # -- helpers -----------------------------------------------------------
 
@@ -155,12 +183,33 @@ class Api:
             "config_rewritten": bool(side.get("config_rewritten")),
         }
 
-    def type_status(self, reg: Registry, name: str) -> dict[str, Any]:
+    def type_status(
+        self,
+        reg: Registry,
+        name: str,
+        versions: Optional[dict[str, str]] = None,
+        fw_head: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """One type's state, including what each of its boards is *running*.
+
+        `versions` and `fw_head` are passed in rather than looked up here, because
+        each costs a Moonraker round trip and a caller with ten types would
+        otherwise make ten of them.
+        """
+        from ..build import git_head
+
         mcu = reg.get(name)
+        if versions is None:
+            versions = self.running_versions()
+        if fw_head is None:
+            fw_head = git_head(self.paths.fw_dir("klipper"))
+
         serials = []
         for serial in mcu.serials:
             state, path = device_state(self.paths, mcu.chipset, serial)
-            serials.append({"serial": serial, "state": state, "path": path})
+            entry = {"serial": serial, "state": state, "path": path}
+            entry.update(self.flash_state(serial, versions, fw_head))
+            serials.append(entry)
 
         out: dict[str, Any] = {
             "name": name,
@@ -168,6 +217,11 @@ class Api:
             "serials": serials,
             "artifacts": {fw: self.artifact(name, fw) for fw in FW_TARGETS},
             "katapult_installed": mcu.katapult_installed,
+            # True when at least one board is behind the source tree. Distinct from
+            # the artifact being stale: "needs rebuilding" and "needs flashing" are
+            # different questions, and reporting only the first is what let a board
+            # 90 commits behind show as up to date.
+            "needs_flash": any(s.get("needs_flash") for s in serials),
         }
         for fw in FW_TARGETS:
             cfg = mcu.fw(fw)
@@ -213,8 +267,12 @@ class Api:
         s = self.settings()
         current = self.runner.current() if self.runner else None
         activity = self._printer_activity()
+        from ..build import git_head
+
+        versions = self.running_versions()
+        fw_head = git_head(self.paths.fw_dir("klipper"))
         return {
-            "types": [self.type_status(reg, n) for n in reg.names()],
+            "types": [self.type_status(reg, n, versions, fw_head) for n in reg.names()],
             "bus": self.bus(reg),
             "job": current.to_dict() if current else None,
             "recent": [j.to_dict() for j in self.runner.recent(10)] if self.runner else [],
@@ -240,8 +298,12 @@ class Api:
         return ExclusiveLock(self.paths).holder()
 
     def type_list(self, args: dict) -> dict[str, Any]:
+        from ..build import git_head
+
         reg = self.registry()
-        return {"types": [self.type_status(reg, n) for n in reg.names()]}
+        versions = self.running_versions()
+        fw_head = git_head(self.paths.fw_dir("klipper"))
+        return {"types": [self.type_status(reg, n, versions, fw_head) for n in reg.names()]}
 
     def bus_scan(self, args: dict) -> dict[str, Any]:
         """Everything on the bus, plus the subset worth offering to track.
@@ -993,6 +1055,99 @@ class Api:
                 out.pop(name, None)
         return out
 
+
+
+    # -- what is actually running on the boards -----------------------------
+
+    def _mcu_object_names(self) -> list[str]:
+        """Klipper's printer objects that are MCUs, cached.
+
+        `printer.objects.list` is a separate round trip and the answer only changes
+        when Klipper restarts, so it is cached - otherwise fw.status would cost two
+        probes instead of one and blow its sub-second budget.
+        """
+        now = time.time()
+        if self._mcu_names is not None and now - self._mcu_names_at < MCU_NAMES_TTL:
+            return self._mcu_names
+        res = self._probe("printer.objects.list")
+        objects = (res or {}).get("objects")
+        if not isinstance(objects, list):
+            # Leave the cache alone on a failed probe: a stale list beats none, and
+            # the next call will try again.
+            return self._mcu_names or []
+        names = [o for o in objects if o == "mcu" or str(o).startswith("mcu ")]
+        self._mcu_names = names
+        self._mcu_names_at = now
+        return names
+
+    def running_versions(self) -> dict[str, str]:
+        """Tracked serial -> the firmware version that board is actually running.
+
+        This is the thing staleness could not tell you. `staleness()` compares the
+        built .bin against the source tree, which answers "do I need to rebuild?".
+        It says nothing about what is on the boards, so a board flashed months ago
+        and never touched again reported "up to date" as long as nobody had pulled
+        klipper since. Two boards of the *same type* can be on different versions,
+        which a per-type answer cannot express at all.
+
+        Klipper reports each MCU's `mcu_version` (a git describe, e.g.
+        v0.13.0-711-gd7cea5bb) and its configured serial, so the two can be joined.
+        """
+        names = self._mcu_object_names()
+        if not names:
+            return {}
+
+        query: dict[str, Any] = {"configfile": ["settings"]}
+        for name in names:
+            query[name] = ["mcu_version"]
+        res = self._probe("printer.objects.query", {"objects": query})
+        status = (res or {}).get("status")
+        if not isinstance(status, dict):
+            return {}
+
+        settings = (status.get("configfile") or {}).get("settings") or {}
+        # Klipper lowercases config section names, while the printer object keeps
+        # the case from the config file - so `[mcu EBBT0]` is object "mcu EBBT0" and
+        # setting "mcu ebbt0". Match on the lowered form.
+        serial_by_section = {}
+        for section, values in settings.items():
+            if not (section == "mcu" or section.startswith("mcu ")):
+                continue
+            path = (values or {}).get("serial")
+            if isinstance(path, str) and path:
+                serial_by_section[section.lower()] = _serial_from_path(path)
+
+        out: dict[str, str] = {}
+        for name in names:
+            version = (status.get(name) or {}).get("mcu_version")
+            serial = serial_by_section.get(name.lower())
+            if isinstance(version, str) and version and serial:
+                out[serial] = version
+        return out
+
+    def flash_state(self, serial: str, versions: dict[str, str], fw_head: Optional[str]) -> dict[str, Any]:
+        """Whether this board is running the firmware the source tree would build.
+
+        `None` for "cannot tell" rather than False, because an offline board or an
+        unreachable Klippy is not evidence that a board is current - and reporting
+        "up to date" without having checked is exactly the bug this fixes.
+        """
+        version = versions.get(serial)
+        running = _running_sha(version or "")
+        if version is None:
+            return {"running_version": None, "running_sha": None, "needs_flash": None}
+        if running is None or not fw_head:
+            # Running something we cannot pin to a commit - a hand-built firmware,
+            # or a klipper checkout with no git metadata.
+            return {"running_version": version, "running_sha": None, "needs_flash": None}
+        # `-dirty` is normal here and must not read as a mismatch: a type with
+        # makefile patches is dirty by construction, because the patch is in place
+        # while klipper stamps its version.
+        return {
+            "running_version": version,
+            "running_sha": running,
+            "needs_flash": not fw_head.startswith(running),
+        }
 
     # -- kconfig -----------------------------------------------------------
 

@@ -94,7 +94,16 @@ def test_status_type_shape(api):
     ebb = types["bttebb36"]
     assert ebb["chipset"] == "stm32g0b1xx"
     assert len(ebb["serials"]) == 2
-    assert set(ebb["serials"][0]) == {"serial", "state", "path"}
+    # Each serial also carries what that board is actually *running*, which is
+    # a different question from whether the artifact is stale.
+    assert set(ebb["serials"][0]) == {
+        "serial",
+        "state",
+        "path",
+        "running_version",
+        "running_sha",
+        "needs_flash",
+    }
     assert set(ebb["artifacts"]) == {"klipper", "katapult"}
     assert ebb["katapult"]["installed"] is True
 
@@ -989,3 +998,144 @@ def test_klipper_and_katapult_are_configured_independently(kapi):
 
     arts = kapi.dispatch("fw.artifacts", {"name": "bttebb36"})
     assert arts["klipper"]["has_config"] and arts["katapult"]["has_config"]
+
+
+# --------------------------------------------------------------------------
+# what is running on the boards
+#
+# `staleness()` compares the built .bin against the source tree, which answers
+# "do I need to rebuild?". It says nothing about the boards - so a board flashed
+# months ago reported "up to date", and two boards of the *same type* on different
+# versions could not be expressed at all.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("version", "sha"),
+    [
+        ("v0.13.0-711-gd7cea5bb", "d7cea5bb"),
+        # A makefile-patched build is always -dirty, so that must not defeat the
+        # match or those types would report needing a flash forever.
+        ("v0.13.0-712-g6d43f8b3-dirty", "6d43f8b3"),
+        ("v0.12.0", None),
+        ("unknown", None),
+        ("", None),
+    ],
+)
+def test_the_commit_is_extracted_from_a_git_describe(version, sha):
+    from klipper_updater.agent.methods import _running_sha
+
+    assert _running_sha(version) == sha
+
+
+def test_a_board_behind_the_source_tree_needs_flashing(api):
+    head = "d7cea5bb1aca70849f28d0bb98ab1b96b9f6db65"
+    versions = {"A-if00": "v0.13.0-623-gaea1bcf5"}
+    state = api.flash_state("A-if00", versions, head)
+    assert state["needs_flash"] is True
+    assert state["running_sha"] == "aea1bcf5"
+
+
+def test_a_board_at_the_source_tree_does_not(api):
+    head = "d7cea5bb1aca70849f28d0bb98ab1b96b9f6db65"
+    assert api.flash_state("A-if00", {"A-if00": "v0.13.0-711-gd7cea5bb"}, head)["needs_flash"] is False
+
+
+def test_a_dirty_version_still_matches(api):
+    """A type with makefile patches is dirty by construction - the patch is in place
+    while klipper stamps its version - so dirty must not mean out of date."""
+    head = "6d43f8b3ddbfab679d1a64cb6f9f7adbe851ee82"
+    state = api.flash_state("A-if00", {"A-if00": "v0.13.0-712-g6d43f8b3-dirty"}, head)
+    assert state["needs_flash"] is False
+
+
+@pytest.mark.parametrize(
+    ("versions", "head", "why"),
+    [
+        ({}, "d7cea5bb", "the board is offline or klippy is unreachable"),
+        ({"A-if00": "v0.12.0"}, "d7cea5bb", "running something with no commit in it"),
+        ({"A-if00": "v0.13.0-711-gd7cea5bb"}, None, "no git metadata in the source tree"),
+    ],
+)
+def test_unknown_is_reported_as_unknown_not_as_up_to_date(api, versions, head, why):
+    """Claiming a board is current without having checked is the bug being fixed,
+    so absence of evidence must not read as evidence."""
+    assert api.flash_state("A-if00", versions, head)["needs_flash"] is None, why
+
+
+def test_running_versions_joins_serials_to_mcu_versions(paths, live_registry_text):
+    """Klipper lowercases config section names while the printer object keeps the
+    case from the file, so `[mcu EBBT0]` is object "mcu EBBT0" and setting
+    "mcu ebbt0". Joining them case-sensitively would find nothing."""
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+
+    calls: list[str] = []
+
+    def fake_call(method, params=None, timeout=1.5):
+        calls.append(method)
+        if method == "printer.objects.list":
+            return {"objects": ["configfile", "mcu", "mcu EBBT0", "toolhead"]}
+        if method == "printer.objects.query":
+            return {
+                "status": {
+                    "configfile": {
+                        "settings": {
+                            "mcu": {
+                                "serial": "/dev/serial/by-id/usb-Klipper_stm32h723xx_2100-if00"
+                            },
+                            "mcu ebbt0": {
+                                "serial": "/dev/serial/by-id/usb-Klipper_stm32g0b1xx_2900-if00"
+                            },
+                        }
+                    },
+                    "mcu": {"mcu_version": "v0.13.0-711-gd7cea5bb"},
+                    "mcu EBBT0": {"mcu_version": "v0.13.0-712-g6d43f8b3"},
+                }
+            }
+        return None
+
+    api = Api(paths, call=fake_call)
+    assert api.running_versions() == {
+        "2100-if00": "v0.13.0-711-gd7cea5bb",
+        "2900-if00": "v0.13.0-712-g6d43f8b3",
+    }
+    # The object list is cached, so a second call costs one probe, not two.
+    calls.clear()
+    api.running_versions()
+    assert calls == ["printer.objects.query"]
+
+
+def test_two_boards_of_one_type_can_disagree(paths, live_registry_text, fake_root):
+    """The case a per-type answer cannot express, and the one that exposed this:
+    EBBT0 on -711 and EBBT1 on -712, both tracked under bttebb36."""
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    api = Api(paths)
+    versions = {
+        "290055001850304158373620-if00": "v0.13.0-711-gd7cea5bb",
+        "230048001750304158373620-if00": "v0.13.0-623-gaea1bcf5",
+    }
+    head = "d7cea5bb1aca70849f28d0bb98ab1b96b9f6db65"
+
+    ebb = api.type_status(api.registry(), "bttebb36", versions, head)
+    by_serial = {s["serial"]: s for s in ebb["serials"]}
+    assert by_serial["290055001850304158373620-if00"]["needs_flash"] is False
+    assert by_serial["230048001750304158373620-if00"]["needs_flash"] is True
+    assert ebb["needs_flash"] is True, "the type rolls up to needing attention"
+
+
+def test_status_fetches_the_version_map_once_not_once_per_type(paths, live_registry_text):
+    """Ten types must not mean ten round trips."""
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    calls: list[str] = []
+
+    def fake_call(method, params=None, timeout=1.5):
+        calls.append(method)
+        return None
+
+    api = Api(paths, call=fake_call)
+    api.dispatch("fw.status")
+    assert calls.count("printer.objects.list") <= 1
+    assert calls.count("printer.objects.query") <= 2  # activity probe + versions
