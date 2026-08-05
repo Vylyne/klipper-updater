@@ -30,7 +30,13 @@ from ..devices import (
     parse_entry,
     scan,
 )
-from ..errors import OperationCancelled, SerialTrackedElsewhereError, UpdaterError
+from ..errors import (
+    DfuPermissionError,
+    OperationCancelled,
+    SerialTrackedElsewhereError,
+    ToolMissingError,
+    UpdaterError,
+)
 from ..paths import FW_TARGETS, REENUMERATE_TIMEOUT, Paths
 from ..settings import Settings, load_settings, save_settings
 from .rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, MethodNotFound, RpcError
@@ -1035,6 +1041,7 @@ class Api:
         "fw.status": "status",
         "fw.type.list": "type_list",
         "fw.bus.scan": "bus_scan",
+        "fw.dfu.scan": "dfu_scan",
         "fw.artifacts": "artifacts",
         "fw.settings.get": "settings_get",
         "fw.settings.set": "settings_set",
@@ -1091,6 +1098,91 @@ class Api:
 
 
 
+
+    # -- DFU: what is waiting to be adopted ---------------------------------
+
+    #: Why a DFU flash cannot start right now. Stable codes; the panel switches on
+    #: them, and each maps to a different physical thing for the user to do.
+    DFU_NO_TOOL = "no_tool"
+    DFU_PERMISSION_DENIED = "permission_denied"
+    DFU_NONE = "none"
+    DFU_AMBIGUOUS = "ambiguous"
+
+    def dfu_scan(self, args: dict) -> dict[str, Any]:
+        """What is sitting in DFU mode, and can this agent actually open it?
+
+        Deliberately **reports** failures instead of raising them. Every other
+        method treats a refusal as an error because the caller asked for work to
+        happen; here, describing the situation *is* the work. "dfu-util is not
+        installed" is this method's answer, not its failure.
+
+        The distinctions are not cosmetic - each sends the user somewhere else:
+
+        ``no_tool``
+            `apt install dfu-util`. Nothing to do with the board.
+        ``permission_denied``
+            libusb saw a board and could not claim it. **The boot jumper worked.**
+            Reporting this as "no device found" is what once sent a user back to
+            redo the one step that had succeeded. The udev rule tags `uaccess`,
+            which grants the *seated* user - and this agent is a daemon, not a
+            login session - so in practice it rides on `GROUP="plugdev"` and the
+            service user being in that group.
+        ``none``
+            Genuinely nothing in DFU. Fit the boot jumper and replug.
+        ``ambiguous``
+            More than one board in DFU. dfu-util addresses by VID:PID only, so
+            there is no way to say which one is meant - unplug the others.
+        """
+        from ..flash import DFU_VID_PID, dfu_devices
+
+        out: dict[str, Any] = {
+            "vid_pid": DFU_VID_PID,
+            "devices": [],
+            "count": 0,
+            "ready": False,
+            "reason": None,
+            "message": None,
+        }
+
+        try:
+            devices = dfu_devices(reporter=self._log_reporter)
+        except ToolMissingError as exc:
+            out["reason"] = self.DFU_NO_TOOL
+            out["message"] = str(exc)
+            return out
+        except DfuPermissionError as exc:
+            out["reason"] = self.DFU_PERMISSION_DENIED
+            out["message"] = str(exc)
+            # The raw dfu-util output, because a permissions diagnosis is exactly
+            # the case where the operator wants to see what the tool actually said.
+            # UpdaterError keeps its extras in .data, not as attributes.
+            out["output"] = exc.data.get("output")
+            return out
+        except UpdaterError as exc:
+            out["reason"] = exc.code
+            out["message"] = str(exc)
+            return out
+
+        out["devices"] = devices
+        out["count"] = len(devices)
+        if not devices:
+            out["reason"] = self.DFU_NONE
+            out["message"] = (
+                "No board is in DFU mode. Fit the boot jumper (or hold BOOT0) and "
+                "replug the board."
+            )
+            return out
+        if len(devices) > 1:
+            out["reason"] = self.DFU_AMBIGUOUS
+            out["message"] = (
+                f"{len(devices)} boards are in DFU mode. dfu-util can only address "
+                f"them by USB id, so there is no way to say which one is meant - "
+                f"unplug all but the target board."
+            )
+            return out
+
+        out["ready"] = True
+        return out
 
     # -- bulk operations ----------------------------------------------------
 

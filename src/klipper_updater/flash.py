@@ -181,8 +181,8 @@ _DFU_DENIED_RE = re.compile(
 )
 
 
-def list_dfu_devices(*, reporter: Reporter = null_reporter) -> list[str]:
-    """One entry per DFU *device* from `dfu-util -l`.
+def dfu_devices(*, reporter: Reporter = null_reporter) -> list[dict[str, Optional[str]]]:
+    """One entry per DFU *device* from `dfu-util -l`, parsed.
 
     Two things this must get right, both learned the hard way on real hardware:
 
@@ -196,6 +196,10 @@ def list_dfu_devices(*, reporter: Reporter = null_reporter) -> list[str]:
     and no ``Found DFU`` line at all - so the old code reported "no DFU device
     detected. Hold BOOT0 and replug", sending the user to redo the one step that
     had actually worked. That case raises now.
+
+    The fields are worth keeping rather than just the line: a DFU device has no
+    ``/dev/serial/by-id`` name, so its USB serial and bus path are the only
+    identity it has until it re-enumerates as Katapult.
     """
     try:
         res = subprocess.run(
@@ -213,7 +217,7 @@ def list_dfu_devices(*, reporter: Reporter = null_reporter) -> list[str]:
     # Deduplicate by whatever identifies the physical board, in decreasing order
     # of trustworthiness. dict preserves insertion order, so the first line for
     # each device is the one reported.
-    devices: dict[str, str] = {}
+    devices: dict[str, dict[str, Optional[str]]] = {}
     for raw in out.splitlines():
         line = raw.strip()
         match = _DFU_LINE_RE.search(line)
@@ -225,7 +229,16 @@ def list_dfu_devices(*, reporter: Reporter = null_reporter) -> list[str]:
             or match.group("devnum")
             or line  # nothing to group on: treat the line itself as the device
         )
-        devices.setdefault(key, line)
+        devices.setdefault(
+            key,
+            {
+                "vidpid": match.group("vidpid"),
+                "serial": match.group("serial"),
+                "path": match.group("path"),
+                "devnum": match.group("devnum"),
+                "raw": line,
+            },
+        )
 
     if not devices and _DFU_DENIED_RE.search(out):
         raise DfuPermissionError(
@@ -237,6 +250,11 @@ def list_dfu_devices(*, reporter: Reporter = null_reporter) -> list[str]:
         )
 
     return list(devices.values())
+
+
+def list_dfu_devices(*, reporter: Reporter = null_reporter) -> list[str]:
+    """The raw `dfu-util -l` line per device. See `dfu_devices` for the fields."""
+    return [str(d["raw"]) for d in dfu_devices(reporter=reporter)]
 
 
 #: dfu-util's own statement that the image is on the board.
