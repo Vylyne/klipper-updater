@@ -111,13 +111,28 @@ class BootloaderTimeoutError(FlashError):
 
 
 class AmbiguousDfuError(FlashError):
-    """More than one device sitting in DFU mode.
+    """More than one *device* sitting in DFU mode.
 
     dfu-util targeting 0483:df11 would flash whichever answers first, which
     with two boards attached means flashing the wrong one.
+
+    Counted by distinct device, never by line: `dfu-util -l` prints one line per
+    DFU *altsetting*, so a single STM32 shows up three times (alt=0/1/2) with the
+    same devnum, path and serial.
     """
 
     code = "ambiguous_dfu"
+
+
+class DfuPermissionError(FlashError):
+    """dfu-util can see the board but cannot open it.
+
+    Distinct from `device_not_found` on purpose: "no DFU device detected, hold
+    BOOT0 and replug" sends the user to re-do something that already worked,
+    when the real fix is a udev rule.
+    """
+
+    code = "dfu_permission_denied"
 
 
 class ToolMissingError(UpdaterError):

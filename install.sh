@@ -13,6 +13,8 @@ DATA_PATH="${DATA_PATH:-${PRINTER_DATA}/mcu-updater}"
 # One file for everything hand-edited: the [updater] section and the [mcu ...]
 # sections. Must match Paths.main_config.
 MAIN_CONFIG="${CONFIG_PATH}/mcu-updater.cfg"
+# udev rule letting dfu-util open a bare STM32 without root.
+DFU_UDEV_RULE="${DFU_UDEV_RULE:-/etc/udev/rules.d/99-mcu-updater-dfu.rules}"
 # Constrained from two directions:
 #  * Moonraker only permits a `managed_services` value equal to the
 #    [update_manager <name>] section, `klipper`, or `moonraker` - so the unit name
@@ -105,6 +107,67 @@ function check_flash_deps {
     else
         printf "[WARN] apt install failed. Run 'sudo apt install python3-serial' yourself.\n\n"
     fi
+}
+
+function check_dfu_permissions {
+    # dfu-util needs raw USB access. Without a udev rule it prints
+    #   Cannot open DFU device 0483:df11 ... (LIBUSB_ERROR_ACCESS)
+    # and lists nothing - which for a long time we reported as "no DFU device
+    # detected, hold BOOT0 and replug", sending people to redo the one step that
+    # had actually worked. A rule fixes it for both the CLI and the agent, so
+    # neither needs sudo at flash time.
+    #
+    # Only relevant for installing Katapult onto a bare STM32 (add-mcu). Boards
+    # that already have Katapult never touch dfu-util.
+    if ! command -v dfu-util >/dev/null 2>&1; then
+        printf "[DFU]  dfu-util not installed - only needed for add-mcu on a bare board.\n\n"
+        return 0
+    fi
+    if [ -f "${DFU_UDEV_RULE}" ]; then
+        printf "[DFU]  udev rule already present.\n\n"
+        return 0
+    fi
+
+    echo "[DFU]  No udev rule for STM32 DFU mode (${DFU_UDEV_RULE})."
+    echo "       Without it dfu-util cannot open a board in DFU mode, and add-mcu"
+    echo "       fails on a board whose boot jumper is perfectly fine."
+    local answer=""
+    read -r -p "[DFU]  Install the udev rule now? [Y/n]: " answer || answer=""
+    case "${answer}" in
+        n | N | no | NO)
+            echo "[WARN] Skipped. add-mcu on a bare board will need sudo until you add it."
+            printf "\n"
+            return 0
+            ;;
+    esac
+
+    local tmp
+    tmp="$(mktemp)"
+    cat > "${tmp}" <<'RULE'
+# STM32 in DFU mode (0483:df11) - lets dfu-util open the device without root, so
+# mcu-updater's add-mcu works from the CLI and from the Moonraker agent.
+# Installed by mcu-updater's install.sh.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="df11", MODE="0664", GROUP="plugdev", TAG+="uaccess"
+RULE
+    sudo install -m 0644 -o root -g root "${tmp}" "${DFU_UDEV_RULE}"
+    rm -f "${tmp}"
+
+    # The rule grants access to the plugdev group, so the service account has to
+    # be in it. A group change needs a fresh login - or for a daemon, a restart,
+    # which install_service does later anyway.
+    if getent group plugdev >/dev/null 2>&1; then
+        if ! id -nG "${USER}" | tr ' ' '\n' | grep -qx plugdev; then
+            echo "[DFU]  Adding ${USER} to the plugdev group..."
+            sudo usermod -aG plugdev "${USER}"
+            echo "[DFU]  Log out and back in for your shell to pick that up."
+        fi
+    else
+        echo "[WARN] No plugdev group on this system; relying on TAG+=\"uaccess\"."
+    fi
+
+    sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+    echo "[DFU]  Rule installed. Replug a board in DFU mode for it to take effect."
+    printf "\n"
 }
 
 function check_config {
@@ -423,6 +486,7 @@ EOF
 preflight_checks
 check_paths
 check_flash_deps
+check_dfu_permissions
 check_config
 migrate_legacy_service
 install_service

@@ -171,3 +171,95 @@ def test_an_unknown_chipset_is_reported_clearly(paths, ready):
     with pytest.raises(UnsupportedChipsetError) as exc:
         flash_initial_bootloader(paths, ready, "esp32", "x.bin")
     assert exc.value.data["chipset"] == "esp32"
+
+
+# --------------------------------------------------------------------------
+# list_dfu_devices - the parser itself
+#
+# Every test above monkeypatches list_dfu_devices out, so the parsing had no
+# coverage at all. These use output captured verbatim from a real BTT EBB on a
+# Pi running dfu-util 0.11.
+# --------------------------------------------------------------------------
+
+#: One physical board. dfu-util prints a line per DFU altsetting, so it is three
+#: lines sharing devnum=51, path and serial.
+_REAL_ONE_BOARD = """dfu-util 0.11
+
+Copyright 2005-2009 Weston Schmidt, Harald Welte and OpenMoko Inc.
+Copyright 2010-2021 Tormod Volden and Stefan Schmidt
+This program is Free Software and has ABSOLUTELY NO WARRANTY
+Please report bugs to http://sourceforge.net/p/dfu-util/tickets/
+
+Found DFU: [0483:df11] ver=0200, devnum=51, cfg=1, intf=0, path="6-1.6.6.1.3", alt=2, name="@Internal Flash   /0x08000000/64*02Kg", serial="3941335F3434"
+Found DFU: [0483:df11] ver=0200, devnum=51, cfg=1, intf=0, path="6-1.6.6.1.3", alt=1, name="@Internal Flash   /0x08000000/64*02Kg", serial="3941335F3434"
+Found DFU: [0483:df11] ver=0200, devnum=51, cfg=1, intf=0, path="6-1.6.6.1.3", alt=0, name="@Internal Flash   /0x08000000/64*02Kg", serial="3941335F3434"
+"""
+
+#: Same board, same jumper, no udev rule.
+_REAL_DENIED = """dfu-util 0.11
+
+Copyright 2005-2009 Weston Schmidt, Harald Welte and OpenMoko Inc.
+Copyright 2010-2021 Tormod Volden and Stefan Schmidt
+This program is Free Software and has ABSOLUTELY NO WARRANTY
+Please report bugs to http://sourceforge.net/p/dfu-util/tickets/
+
+dfu-util: Cannot open DFU device 0483:df11 found on devnum 51 (LIBUSB_ERROR_ACCESS)
+"""
+
+
+def _fake_dfu_util(monkeypatch, stdout: str, stderr: str = "") -> None:
+    import subprocess as sp
+
+    def fake_run(cmd, **kwargs):
+        assert os.path.basename(cmd[0]) == "dfu-util"
+        return sp.CompletedProcess(cmd, 0, stdout, stderr)
+
+    monkeypatch.setattr(flash_mod.subprocess, "run", fake_run)
+
+
+def test_one_board_with_three_altsettings_is_one_device(monkeypatch):
+    """The bug that made every DFU flash impossible: counting lines instead of
+    devices meant a single board looked like three and was refused as ambiguous."""
+    _fake_dfu_util(monkeypatch, _REAL_ONE_BOARD)
+    assert len(flash_mod.list_dfu_devices()) == 1
+
+
+def test_a_single_board_is_therefore_flashable(paths, ready, monkeypatch):
+    """The end-to-end consequence: no AmbiguousDfuError for one board."""
+    _fake_dfu_util(monkeypatch, _REAL_ONE_BOARD)
+    flash_dfu_stm32(paths, ready, str(paths.bin_file("board", "klipper")))
+
+
+def test_two_real_boards_are_still_refused(monkeypatch):
+    """Dedup must not go so far as to merge genuinely distinct boards."""
+    second = _REAL_ONE_BOARD.replace('devnum=51', 'devnum=52').replace(
+        'path="6-1.6.6.1.3"', 'path="6-1.6.6.1.4"'
+    ).replace('serial="3941335F3434"', 'serial="OTHERSERIAL1"')
+    _fake_dfu_util(monkeypatch, _REAL_ONE_BOARD + second)
+    assert len(flash_mod.list_dfu_devices()) == 2
+
+
+def test_permission_denied_is_not_reported_as_no_device(monkeypatch):
+    """"Hold BOOT0 and replug" is the worst possible advice here - the jumper was
+    already right and nothing the user does at the board will help."""
+    from klipper_updater.errors import DfuPermissionError
+
+    _fake_dfu_util(monkeypatch, "", _REAL_DENIED)
+    with pytest.raises(DfuPermissionError) as exc:
+        flash_mod.list_dfu_devices()
+    assert "permissions" in str(exc.value).lower()
+    assert "udev" in str(exc.value).lower()
+
+
+def test_a_genuinely_empty_listing_is_still_empty(monkeypatch):
+    _fake_dfu_util(monkeypatch, "dfu-util 0.11\n\nNo DFU capable USB device available\n")
+    assert flash_mod.list_dfu_devices() == []
+
+
+def test_the_parser_does_not_depend_on_the_words_found_dfu(monkeypatch):
+    """Matched on VID:PID, so a wording change cannot silently blind us."""
+    _fake_dfu_util(
+        monkeypatch,
+        'Detected DFU: [0483:df11] devnum=7, path="1-2", alt=0, serial="ABC123"\n',
+    )
+    assert len(flash_mod.list_dfu_devices()) == 1
