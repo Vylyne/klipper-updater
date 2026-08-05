@@ -80,8 +80,28 @@ git rebase upstream/master        # routine, on each upstream release
 ```
 
 Then re-run the gates (below) and tag a release as
-`v<upstream-version>-fw<n>` — e.g. `v2.18.2-fw1` — so provenance is obvious in
-Mainsail's Update Manager panel.
+
+    v<one patch ABOVE the upstream you rebased onto>-vylyne.<n>
+
+so upstream v2.18.2 gives `v2.18.3-vylyne.1`, then `-vylyne.2`, `-vylyne.10`, and
+so on without limit. Provenance is obvious in Mainsail's Update Manager panel,
+and the two details that look cosmetic are not:
+
+- **One patch above, not the upstream version.** A prerelease sorts *below* its
+  base, so `v2.18.2-vylyne.1` is less than upstream's `2.18.2` and Mainsail's UI
+  hides it while Moonraker's API cheerfully reports it. Being below the base is
+  then a feature: when upstream really ships 2.18.3, it supersedes every
+  `2.18.3-vylyne.N`.
+- **A dot before the number, never a hyphen.** Semver compares a purely numeric
+  prerelease identifier numerically and anything else as text. `vylyne.10` is
+  `["vylyne", 10]` and beats `.9`; `vylyne-10` is one string and *loses* to
+  `vylyne-9`. That is the old `-fwN` scheme's bug — `fw10 < fw9` — which capped
+  it at nine releases per base. Zero-padding or hex only move that cap; the dot
+  removes it.
+
+`ku-release.yml` refuses any tag that breaks either rule before it builds
+anything, so a mistake here fails loudly instead of publishing a release nobody
+is ever offered.
 
 To refresh an upstream PR: `git switch ku/develop && git cherry-pick <the 5>`.
 
