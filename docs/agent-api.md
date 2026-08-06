@@ -4,10 +4,12 @@ The contract between `mcu-updater` (Python) and the Mainsail panel
 (TypeScript). Both sides are hand-written, so **this file is the single source of
 truth** — and `tests/test_agent_methods.py` is what stops them drifting.
 
-- Agent name: `klipper_updater`
+- Agent name: `klipper_updater` — a protocol identifier, deliberately unchanged
+  when the project was renamed to `mcu-updater`; the panel matches on it.
 - `api_version`: **1**
-- Phase: **3** (can build, and can flash one board at a time when explicitly
-  enabled; cannot yet flash a whole type, run update-all, or mutate the registry)
+- Every planned capability has shipped: build, flash, bulk build/flash/update,
+  registry and settings editing, Kconfig in the browser, and DFU setup of a new
+  board. The flashing ones stay behind `enable_flashing`, off by default.
 
 **Gate controls on `capabilities` from `fw.ping`, not on `phase`.** An agent
 without a job runner does not register or advertise the job methods at all, so a
@@ -69,7 +71,8 @@ API; the prose is not. Codes come from `errors.py`: `config_corrupt`,
 `unknown_type`, `unknown_serial`, `ambiguous_serial`, `serial_tracked_elsewhere`,
 `no_saved_config`, `source_missing`, `build_failed`, `flash_failed`,
 `device_not_found`, `bootloader_timeout`, `ambiguous_dfu`, `tool_missing`,
-`unsupported_chipset`, `busy`, `print_in_progress`, `cancelled`, `tty_required`.
+`unsupported_chipset`, `busy`, `print_in_progress`, `cancelled`, `tty_required`,
+`invalid_type_name`, `dfu_permission_denied`, `kconfig`.
 
 JSON-RPC codes: `-32601` unknown method, `-32602` bad params, `-32000`
 application error (see `data.code`), `-32603` internal.
