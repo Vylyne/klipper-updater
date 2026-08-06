@@ -34,6 +34,7 @@ from .errors import (
     UpdaterError,
 )
 from .flash import adoptable_devices, flash_initial_bootloader, flash_katapult
+from .layout import migrate_type_dirs
 from .lock import exclusive
 from .paths import FW_TARGETS, Paths
 from .service import Journal, klipper_stopped, make_controller, reconcile
@@ -509,10 +510,17 @@ def main(argv: Optional[list[str]] = None) -> None:
     paths = Paths.from_env()
 
     try:
+        moved = migrate_type_dirs(paths)
         settings = load_settings(paths.settings_file)
     except UpdaterError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    if moved:
+        print(
+            f"Moved per-type config into {paths.type_root}: {', '.join(moved)}",
+            file=sys.stderr,
+        )
 
     parser = build_parser()
 

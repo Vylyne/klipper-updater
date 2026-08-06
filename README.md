@@ -129,7 +129,7 @@ reasoning.
 
 ~/printer_data/config/mcu-updater/   hand-edited, backed up, editable in Mainsail
     mcu-updater.cfg                      settings + the MCU registry
-    <type>/<fw>.config                   saved menuconfig answers
+    types/<type>/<fw>.config             saved menuconfig answers
 
 ~/printer_data/mcu-updater/          generated, not backed up
     <type>/<fw>.bin                      built firmware
@@ -140,6 +140,10 @@ Config lives under `config/` so it's backed up and reachable by Mainsail's own
 editor. Firmware binaries deliberately don't: backup tools git-commit everything
 in that directory, so a `.bin` there means a binary churn commit after every
 build — and they're regenerable anyway.
+
+The per-type folders sit under `types/` so `mcu-updater.cfg` is the only thing
+in the directory that editor opens. They used to be directly in it; an existing
+install is moved across on the next run and told what moved.
 
 Staleness compares recorded provenance — the source-tree commit and a hash of
 the `.config` used — rather than file timestamps. So `status` correctly reports

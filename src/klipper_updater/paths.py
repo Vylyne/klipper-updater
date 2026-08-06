@@ -34,6 +34,12 @@ HUMAN_ACTION_TIMEOUT = 120
 
 DEFAULT_SERIAL_BY_ID = "/dev/serial/by-id"
 
+#: Per-type config folders are gathered under this subdirectory of `config_dir`.
+#: They used to sit directly in it, so a printer with six board types showed six
+#: folders in Mainsail's file browser before the one file anyone edits.
+#: :func:`klipper_updater.layout.migrate_type_dirs` moves an old install across.
+TYPE_SUBDIR = "types"
+
 
 @dataclasses.dataclass(frozen=True)
 class Paths:
@@ -197,8 +203,25 @@ class Paths:
 
     # --- per-type saved state ---
 
+    @property
+    def type_root(self) -> str:
+        """Parent of every per-type config folder.
+
+        Exists so `mcu-updater.cfg` is the only thing in `config_dir` - it is the
+        file people open, and it was previously buried under one folder per board
+        type in Mainsail's editor.
+        """
+        return os.path.join(self.config_dir, TYPE_SUBDIR)
+
     def type_dir(self, mcu_type: str) -> str:
         """Saved menuconfig answers for one type. Backed up, editable in Mainsail."""
+        return os.path.join(self.type_root, mcu_type)
+
+    def legacy_type_dir(self, mcu_type: str) -> str:
+        """Where a type's config lived before it was gathered under `types/`.
+
+        Only for migrating; nothing reads a config from here.
+        """
         return os.path.join(self.config_dir, mcu_type)
 
     def artifact_dir(self, mcu_type: str) -> str:

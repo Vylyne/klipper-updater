@@ -58,9 +58,20 @@ def test_an_explicit_home_beats_the_environment(tmp_path):
     assert p.home == str(tmp_path / "explicit")
 
 
+def test_per_type_config_is_gathered_under_a_subdirectory(tmp_path):
+    """So mcu-updater.cfg is the only thing in the folder Mainsail's editor opens."""
+    p = Paths.from_env(env={"KLIPPER_UPDATER_HOME": str(tmp_path)})
+    assert p.type_root == os.path.join(p.config_dir, "types")
+    assert p.type_dir("bttebb36") == os.path.join(p.config_dir, "types", "bttebb36")
+    assert os.path.dirname(p.main_config) == p.config_dir
+    # The data tree is not browsed, and its dotfiles already sort apart from the
+    # per-type folders - so it deliberately keeps the flat layout.
+    assert p.artifact_dir("bttebb36") == os.path.join(p.data_dir, "bttebb36")
+
+
 def test_per_type_layout(tmp_path):
     p = Paths.from_env(env={"KLIPPER_UPDATER_HOME": str(tmp_path)})
-    assert p.type_dir("bttebb36").endswith(os.path.join("mcu-updater", "bttebb36"))
+    assert p.type_dir("bttebb36").endswith(os.path.join("types", "bttebb36"))
     assert p.config_file("bttebb36", "klipper").endswith("klipper.config")
     assert p.bin_file("bttebb36", "klipper").endswith("klipper.bin")
     assert p.uf2_file("bttebb36", "katapult").endswith("katapult.uf2")

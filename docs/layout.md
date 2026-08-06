@@ -5,8 +5,8 @@ Files are split by *what they are*, following the `printer_data` conventions.
 ```
 ~/printer_data/config/mcu-updater/     # hand-edited. backed up. editable in Mainsail.
     mcu-updater.cfg                        #   [updater] settings + one [mcu ...] per board
-    bttebb36/klipper.config                #   saved menuconfig answers, per type
-    flylllplusbuffer/klipper.config
+    types/bttebb36/klipper.config          #   saved menuconfig answers, per type
+    types/flylllplusbuffer/klipper.config
 
 ~/printer_data/mcu-updater/            # generated. not backed up.
     bttebb36/klipper.bin                   #   built firmware
@@ -15,6 +15,13 @@ Files are split by *what they are*, following the `printer_data` conventions.
     .updater.lock                          #   runtime state
     .updater.state
 ```
+
+The per-type folders sit under `types/` so that `mcu-updater.cfg` is the only
+thing in the directory Mainsail's config editor opens. They held that spot
+directly at first — six board types meant six folders listed above the one file
+anyone edits. An older install is moved across automatically; see below. The
+data tree keeps the flat layout: nobody browses it, and
+its dotfiles already sort apart from the per-type folders.
 
 ## Why the split
 
@@ -121,11 +128,24 @@ Every path derives from one `Paths` object, so nothing is hardcoded elsewhere:
 
 ## Coming from the old layout
 
-Two moves have happened, and neither has automatic migration — each is a
-one-time job and the conversion isn't worth shipping code for. In both cases the
-tool **refuses to start** rather than reporting an empty registry, because that
-would let the next `add-type` write a fresh file while your real one sat
-untouched:
+### Per-type folders → `types/`
+
+Handled for you. On startup the CLI and the agent each move any folder sitting
+directly in `config/mcu-updater/` that holds a `klipper.config` or
+`katapult.config`, and say which ones they moved. Anything else in there is not
+ours and is left alone.
+
+Two cases refuse rather than guess, because both mean two folders claim the same
+type and building from the invisible one is exactly the failure this tool
+exists to prevent: a name that already exists under `types/`, and an MCU type
+literally named `types`. Resolve it by hand and re-run.
+
+### Registry moves
+
+Two earlier moves have no automatic migration — each is a one-time job and the
+conversion isn't worth shipping code for. In both cases the tool **refuses to
+start** rather than reporting an empty registry, because that would let the next
+`add-type` write a fresh file while your real one sat untouched:
 
 - `~/mcus/mcus.json` → `~/printer_data/config/mcu-updater/mcu-updater.cfg`
   (JSON to `.cfg`, and out of the home directory)
@@ -140,8 +160,9 @@ NEW=~/printer_data/config/mcu-updater
 mkdir -p "$NEW" ~/printer_data/mcu-updater
 
 # saved menuconfig answers - the part worth keeping
-cp -r ~/mcus/*/                "$NEW"/
-find "$NEW" -name '*.bin' -o -name '*.uf2' -o -name '*.build.json' -delete
+mkdir -p "$NEW/types"
+cp -r ~/mcus/*/                "$NEW"/types/
+find "$NEW/types" -name '*.bin' -o -name '*.uf2' -o -name '*.build.json' -delete
 
 # write $NEW/mcu-updater.cfg by hand (mcu-updater.cfg in this repo is a worked
 # example), or recreate it with add-type / add-serial

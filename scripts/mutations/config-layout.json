@@ -1,0 +1,33 @@
+{
+  "_comment": "Guards that must stay load-bearing. Run: ./scripts/mutation_test.py scripts/mutations/config-layout.json",
+  "file": "src/klipper_updater/layout.py",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "tests/test_layout.py",
+    "-q"
+  ],
+  "mutations": [
+    {
+      "name": "only folders holding a saved config are moved",
+      "find": "        if not os.path.isdir(legacy) or not _has_saved_config(legacy):\n            continue\n",
+      "replace": "        if not os.path.isdir(legacy):\n            continue\n"
+    },
+    {
+      "name": "a collision refuses instead of overwriting",
+      "find": "        if os.path.exists(target):",
+      "replace": "        if False:"
+    },
+    {
+      "name": "a type named 'types' is refused before anything moves",
+      "find": "    _refuse_if_types_is_itself_a_type(paths)\n",
+      "replace": ""
+    },
+    {
+      "name": "the whole folder moves, so unenumerated files come along",
+      "find": "            shutil.move(legacy, target)",
+      "replace": "            os.makedirs(target, exist_ok=True)\n            for fw in FW_TARGETS:\n                src = os.path.join(legacy, f\"{fw}.config\")\n                if os.path.isfile(src):\n                    shutil.move(src, os.path.join(target, f\"{fw}.config\"))\n            shutil.rmtree(legacy)"
+    }
+  ]
+}

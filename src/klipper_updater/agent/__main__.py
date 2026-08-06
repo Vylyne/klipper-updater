@@ -12,6 +12,8 @@ import threading
 from typing import Optional
 
 from .. import AGENT_NAME, __version__
+from ..errors import UpdaterError
+from ..layout import migrate_type_dirs
 from ..paths import Paths
 from .service import Agent, wait_for_socket
 
@@ -77,6 +79,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     sock = args.socket or paths.moonraker_sock
 
     log.info(f"{AGENT_NAME} {__version__} starting (socket={sock})")
+
+    # Logged and survived rather than fatal: the only way this refuses is a
+    # name collision a human has to resolve, and exiting would put us in a
+    # systemd restart loop that takes the whole panel - including the status
+    # that would explain the problem - offline. A build then fails loudly with
+    # ConfigNotFoundError naming the path it looked in.
+    try:
+        moved = migrate_type_dirs(paths)
+    except UpdaterError as exc:
+        log.error(f"could not gather per-type config under {paths.type_root}: {exc}")
+    else:
+        if moved:
+            log.info(f"moved per-type config into {paths.type_root}: {', '.join(moved)}")
 
     if args.wait_for_socket and not wait_for_socket(sock, args.wait_for_socket):
         # Not fatal: run_forever retries anyway. This just avoids a burst of
