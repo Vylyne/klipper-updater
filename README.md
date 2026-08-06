@@ -128,6 +128,31 @@ pytest -q
 ruff check src tests scripts
 ```
 
+### ESP32 displays
+
+Knomis and anything else PlatformIO builds, managed alongside the MCUs:
+
+```ini
+# mcu-updater.cfg
+[updater]
+display_source: ~/knomi_serial     # one repo, shared by every env
+
+[display knomi_toolchanger]        # the section name IS the PlatformIO env
+```
+
+The screens themselves are not listed here — `[knomi_serial T0_knomi]` in
+`printer.cfg` already names its port, and a second copy would only be something
+to disagree with.
+
+Two things to know:
+
+- **A port is never inferred.** `pio run -t upload` picks one on its own when
+  told nothing, and every screen is an indistinguishable CH340 — so an upload
+  that guesses writes firmware to the wrong display. Every write pins its port.
+- **A missing screen is otherwise invisible.** The klippy module runs as a no-op
+  when a port won't open, so Klipper starts happily with a blank display and no
+  error. `fw.display.list` is the only thing that says so.
+
 ### Checking that a guard is load-bearing
 
 A guard no test exercises is decoration, and a passing suite cannot tell you
