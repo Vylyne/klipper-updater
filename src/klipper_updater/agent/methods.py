@@ -320,7 +320,57 @@ class Api:
             # True while nothing here can build or flash. The panel uses
             # `capabilities` from fw.ping for per-control gating.
             "read_only": self.runner is None,
+            # ESP32 displays. Absent config means the key is simply an empty
+            # list, so a printer with no screens pays nothing for the feature.
+            "displays": self.display_status(),
         }
+
+    def display_status(self) -> list[dict[str, Any]]:
+        """Configured display types, each with the screens Klipper expects.
+
+        Rolled into fw.status so the panel paints in one call, like everything
+        else. Cheap when unconfigured: no `[display]` sections means no work at
+        all, not even the configfile query.
+        """
+        from .. import displays as displays_mod
+
+        types = self.display_types()
+        if not types:
+            return []
+
+        listed = self.display_list({})
+        macs = displays_mod.read_macs(self.paths)
+
+        out = []
+        for _name, display in sorted(types.items()):
+            prefix = display.klipper_section
+            screens = []
+            for entry in listed["displays"]:
+                if not entry["section"].startswith(prefix + " "):
+                    continue
+                port = entry["configured_path"]
+                known = macs.get(port) or {}
+                screens.append(
+                    {
+                        **entry,
+                        # Last seen at this port, from the flash that put it
+                        # there. None until it has been flashed by us once.
+                        "mac": known.get("mac"),
+                        "flashed_at": known.get("at"),
+                    }
+                )
+            out.append(
+                {
+                    **display.to_json(),
+                    "screens": screens,
+                    # Built by PlatformIO, not by us - so this is "is there an
+                    # image on disk", not staleness. PlatformIO decides whether a
+                    # rebuild is needed, and it is fast when nothing changed.
+                    "has_firmware": os.path.exists(displays_mod.firmware_bin(display)),
+                    "reachable": listed["reachable"],
+                }
+            )
+        return out
 
     def lock_holder(self) -> Optional[dict[str, Any]]:
         from ..lock import ExclusiveLock
@@ -1155,10 +1205,20 @@ class Api:
             return {"displays": [], "reachable": False}
 
         settings = (status.get("configfile") or {}).get("settings") or {}
+
+        # Every configured type's section prefix, not just Knomi's - a second
+        # display with its own klippy module declares a different one. Falls back
+        # to knomi_serial so this still answers before any [display] section
+        # exists, which is how it gets used while setting one up.
+        prefixes = {d.klipper_section for d in self.display_types().values()}
+        prefixes.discard("")
+        if not prefixes:
+            prefixes = {"knomi_serial"}
+
         displays = []
         for section, values in sorted(settings.items()):
             # Klipper lowercases section names in `settings`, so match lowered.
-            if not section.startswith("knomi_serial "):
+            if not any(section.startswith(p + " ") for p in prefixes):
                 continue
             configured = (values or {}).get("serial")
             if not isinstance(configured, str) or not configured:
@@ -1175,7 +1235,7 @@ class Api:
 
             displays.append(
                 {
-                    "name": section[len("knomi_serial ") :],
+                    "name": section.split(" ", 1)[1],
                     "section": section,
                     "configured_path": configured,
                     "resolved_path": resolved,

@@ -6,6 +6,7 @@
     "-m",
     "pytest",
     "tests/test_agent_display_jobs.py",
+    "tests/test_agent_displays.py",
     "-q"
   ],
   "mutations": [
@@ -18,6 +19,16 @@
       "name": "the idle gate applies to displays too",
       "find": "        assert_printer_idle(\n            settings,\n            activity=self._printer_activity,\n            force=bool(args.get(\"force\")),\n            reporter=self._log_reporter,\n        )\n\n        def run(ctx) -> dict[str, Any]:\n            from .. import displays as displays_mod",
       "replace": "        def run(ctx) -> dict[str, Any]:\n            from .. import displays as displays_mod"
+    },
+    {
+      "name": "screens are matched by their type's own section prefix",
+      "find": "            if not any(section.startswith(p + \" \") for p in prefixes):",
+      "replace": "            if not section.startswith(\"knomi_serial \"):"
+    },
+    {
+      "name": "displays ride along in fw.status",
+      "find": "            \"displays\": self.display_status(),\n",
+      "replace": "            \"displays\": [],\n"
     }
   ]
 }

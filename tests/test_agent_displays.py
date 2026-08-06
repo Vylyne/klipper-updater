@@ -163,3 +163,76 @@ def test_it_works_with_no_moonraker_at_all(paths, live_registry_text):
 def test_it_is_available_to_a_read_only_agent(api):
     """It reads config and stats paths. Nothing here writes."""
     assert "fw.display.list" in api.dispatch("fw.ping")["capabilities"]
+
+
+# --------------------------------------------------------------------------
+# in fw.status, so the panel paints in one call
+# --------------------------------------------------------------------------
+
+
+def test_a_printer_with_no_displays_pays_nothing(api):
+    """Not even the configfile query - an absent feature should cost an absent
+    key, not a round trip."""
+    calls = []
+    api._call = lambda method, params, timeout: calls.append(method) or {}
+
+    assert api.dispatch("fw.status")["displays"] == []
+    assert "printer.objects.query" in calls  # for the mcu join
+    # ...but display_status short-circuited before adding its own.
+    assert calls.count("printer.objects.query") <= 2
+
+
+def test_configured_displays_appear_in_status(api, paths, fake_root, live_registry_text):
+    port = fake_root / "knomi_t0"
+    port.write_text("", encoding="utf-8")
+    with open(paths.main_config, "a", encoding="utf-8") as fh:
+        fh.write(f"\n[display knomi_toolchanger]\nsource: {fake_root}\n")
+
+    api._call = _moonraker({"knomi_serial t0_knomi": {"serial": str(port)}})
+    entry = api.dispatch("fw.status")["displays"][0]
+
+    assert entry["env"] == "knomi_toolchanger"
+    assert [s["name"] for s in entry["screens"]] == ["t0_knomi"]
+    assert entry["screens"][0]["present"] is True
+    # Never flashed by us, so no MAC is known yet - and it says so rather than
+    # inventing one.
+    assert entry["screens"][0]["mac"] is None
+
+
+def test_a_known_mac_travels_with_its_screen(api, paths, fake_root):
+    from klipper_updater import displays as displays_mod
+
+    port = fake_root / "knomi_t0"
+    port.write_text("", encoding="utf-8")
+    with open(paths.main_config, "a", encoding="utf-8") as fh:
+        fh.write(f"\n[display knomi_toolchanger]\nsource: {fake_root}\n")
+    displays_mod.record_mac(paths, str(port), "cc:ba:97:19:aa:38", "knomi_toolchanger")
+
+    api._call = _moonraker({"knomi_serial t0_knomi": {"serial": str(port)}})
+    screen = api.dispatch("fw.status")["displays"][0]["screens"][0]
+
+    assert screen["mac"] == "cc:ba:97:19:aa:38"
+    assert screen["flashed_at"] is not None
+
+
+def test_screens_are_matched_to_their_type_by_klipper_section(api, paths, fake_root):
+    """Two display types with different klippy modules must not collect each
+    other's screens."""
+    for name in ("knomi_t0", "other_a"):
+        (fake_root / name).write_text("", encoding="utf-8")
+    with open(paths.main_config, "a", encoding="utf-8") as fh:
+        fh.write(
+            f"\n[display knomi_toolchanger]\nsource: {fake_root}\n"
+            f"\n[display otherscreen]\nsource: {fake_root}\nklipper_section: other_display\n"
+        )
+
+    api._call = _moonraker(
+        {
+            "knomi_serial t0_knomi": {"serial": str(fake_root / "knomi_t0")},
+            "other_display a": {"serial": str(fake_root / "other_a")},
+        }
+    )
+    by_env = {d["env"]: d for d in api.dispatch("fw.status")["displays"]}
+
+    assert [s["name"] for s in by_env["knomi_toolchanger"]["screens"]] == ["t0_knomi"]
+    assert [s["name"] for s in by_env["otherscreen"]["screens"]] == ["a"]

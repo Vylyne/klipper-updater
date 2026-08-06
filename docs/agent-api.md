@@ -94,6 +94,9 @@ application error (see `data.code`), `-32603` internal.
 | `fw.build_all` | `fw?`, `scope?` | `{job_id, job, types}` — builds only, touches no board |
 | `fw.flash_all` | `scope?`, `name?`, `force?` | `{job_id, job, boards}` — **off by default** |
 | `fw.update_all` | `scope?`, `name?`, `force?` | `{job_id, job, types}` — **off by default** |
+| `fw.display.list` | — | `{displays, reachable}` — read-only |
+| `fw.display.build` | `name` | `{job_id, job}` — PlatformIO, touches no screen |
+| `fw.display.flash` | `name`, `port?`, `force?` | `{job_id, job, displays}` — **off by default** |
 | `fw.job.get` | `job_id?`, `log_from?` | `{job, log, log_from, log_next, log_dropped}` |
 | `fw.job.cancel` | `job_id?` | `{cancelling, immediate}` |
 
@@ -538,6 +541,90 @@ can see happening is the thing to avoid.
 Only STM32 is supported. RP2040 needs BOOTSEL mass storage and a `.uf2`, which is
 a different mechanism; `unsupported_chipset` says so rather than failing later
 with something about dfu-util.
+
+## ESP32 displays
+
+Knomis and anything else built by PlatformIO. Different enough from an MCU to be
+separate: no Kconfig, no Katapult, no chipset to reason about — **a PlatformIO
+env already names the board, its partitions and its build flags, so the env is
+the type.**
+
+```ini
+# mcu-updater.cfg
+[updater]
+display_source: ~/knomi_serial     # one repo, shared by every env
+
+[display knomi_toolchanger]
+# env: knomi_toolchanger           defaults to the section name
+# source: ~/knomi_serial           defaults to display_source
+# klipper_section: knomi_serial    which [<prefix> X] sections are this type's
+```
+
+Adding the second screen is one more section.
+
+**The device list is Klipper's, not ours.** `[knomi_serial T0_knomi]` already
+names the port it uses, so a second copy here would only be something to disagree
+with. It arrives in the same `configfile.settings` payload `fw.status` already
+fetches for the MCU version join.
+
+### `fw.display.list`
+
+```json
+{"displays": [{"name": "t0_knomi", "section": "knomi_serial t0_knomi",
+               "configured_path": "/dev/knomi_t0",
+               "resolved_path": "/dev/ttyUSB0", "present": true}],
+ "reachable": true}
+```
+
+`present` is the field this exists for. The klippy module catches a failed open
+and runs in no-op mode — deliberately, so one dead screen cannot take Klipper
+down — which means a missing symlink produces **no error anywhere**. Klipper
+starts happily with a blank display. Nothing else in the system notices.
+
+`reachable` is distinct from an empty list: "no displays configured" and "we
+could not ask Klipper" must not look the same.
+
+### `fw.display.flash`
+
+Two properties carry the risk, and both are enforced rather than documented.
+
+**A port is never inferred.** `pio run -t upload` auto-detects one when told
+nothing — and was observed on this printer picking between two indistinguishable
+CH340s, with no way for the user to know which it took. The upload refuses an
+empty port and always passes `--upload-port`.
+
+**The screen list is read before Klipper stops.** It comes from
+`configfile.settings`, which only a *running* Klipper can answer, so reading it
+after the stop would find nothing and flash nothing. Every other flow in this API
+can query mid-job; this one cannot.
+
+Klipper is stopped once for the batch, because the klippy module holds the port
+open and esptool cannot have it while it does. The idle gate applies — a display
+is not special enough to interrupt a QGL for.
+
+**Verification is free.** esptool's ROM handshake refuses to write to anything
+that is not an ESP32, so the target check is inherent rather than a step that
+could be skipped.
+
+```json
+{"env": "knomi_toolchanger",
+ "flashed": [{"name": "t0_knomi", "port": "/dev/knomi_t0",
+              "mac": "cc:ba:97:19:aa:38", "chip": "ESP32-S3 (QFN56) (revision v0.2)"}],
+ "failures": [],
+ "moved": [{"name": "t0_knomi", "port": "/dev/knomi_t0",
+            "was": "aa:bb:...", "now": "cc:ba:..."}]}
+```
+
+`moved` is the swap signal. A display's MAC is in efuse, so it survives
+reflashing — and the CH340 in front of it has no serial of its own, making this
+the only durable identity a screen has. Every upload records `MAC → port`, so a
+different display answering on a known port is reported. Two tophat boards
+plugged into each other's sockets moves every screen on them at once, and nothing
+else would say so.
+
+It is a **warning, not a failure**: the write succeeded either way, and all
+displays of a type run the same image, so a swap is a config problem rather than
+a firmware one.
 
 ### The log, and its sequence numbers
 
