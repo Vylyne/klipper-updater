@@ -317,3 +317,107 @@ def test_log_ring_size_comes_from_settings(paths):
     lines, _, _ = job.log_since(0)
     assert len(lines) == 4
     assert job.dropped == 16
+
+
+# --------------------------------------------------------------------------
+# failures reaching the agent log
+#
+# A build that will not compile leaves nothing behind but the job's ring
+# buffer, which lives in memory and is gone on the next restart. Only internal
+# crashes used to be logged, so the failures a user actually hits - a bad
+# .config, a PlatformIO error - were precisely the ones absent from
+# mcu-updater.log.
+# --------------------------------------------------------------------------
+
+
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+
+    def error(self, fmt: str, *args) -> None:
+        self.errors.append(fmt % args if args else fmt)
+
+
+@pytest.fixture
+def logged_runner(paths, settings):
+    log = RecordingLogger()
+    r = JobRunner(paths, lambda: settings, logger=log)
+    r.log = log  # type: ignore[attr-defined]
+    yield r
+    r._cancel.set()
+    r.wait(timeout=10)
+
+
+def test_an_expected_failure_is_written_to_the_agent_log(logged_runner):
+    def boom(ctx):
+        raise UpdaterError("PlatformIO build failed: pio exited 2.")
+
+    logged_runner.submit("display_build", {"name": "knomi"}, boom)
+    logged_runner.wait(timeout=10)
+
+    assert len(logged_runner.log.errors) == 1
+    record = logged_runner.log.errors[0]
+    assert "display_build" in record
+    assert "pio exited 2" in record
+
+
+def test_the_log_record_carries_the_output_that_explains_it(logged_runner):
+    """`pio exited 2` names the exit code, not the file that would not build."""
+
+    def boom(ctx):
+        ctx.reporter("stdout", "Compiling src/main.cpp")
+        ctx.reporter("stderr", "src/main.cpp:42:3: error: 'fooo' was not declared")
+        raise UpdaterError("PlatformIO build failed: pio exited 2.")
+
+    logged_runner.submit("display_build", {"name": "knomi"}, boom)
+    logged_runner.wait(timeout=10)
+
+    record = logged_runner.log.errors[0]
+    assert "'fooo' was not declared" in record
+
+
+def test_a_successful_job_logs_nothing(logged_runner):
+    logged_runner.submit("display_build", {}, lambda ctx: {"ok": True})
+    logged_runner.wait(timeout=10)
+    assert logged_runner.log.errors == []
+
+
+def test_a_cancelled_job_is_not_reported_as_a_failure(logged_runner):
+    """The user asked for it; it is not something to go and read about."""
+    from klipper_updater.errors import OperationCancelled
+
+    def cancelled(ctx):
+        raise OperationCancelled("cancelled")
+
+    logged_runner.submit("build", {}, cancelled)
+    logged_runner.wait(timeout=10)
+    assert logged_runner.log.errors == []
+
+
+def test_an_internal_crash_still_logs_its_traceback(logged_runner):
+    def boom(ctx):
+        raise RuntimeError("unexpected")
+
+    logged_runner.submit("build", {}, boom)
+    logged_runner.wait(timeout=10)
+
+    record = logged_runner.log.errors[0]
+    assert "Traceback" in record
+    assert "RuntimeError" in record
+
+
+def test_the_tail_is_bounded_so_one_failure_cannot_flood_the_log():
+    job = Job("job-1", "build", {}, log_size=2000)
+    for i in range(500):
+        job.append("stdout", f"line {i}")
+    tail = job.tail()
+    assert len(tail) == 40
+    assert tail[-1].text == "line 499"
+
+
+def test_a_runner_with_no_logger_still_completes_the_job(paths, settings):
+    """The CLI constructs one without a logger; failing there must not crash."""
+    r = JobRunner(paths, lambda: settings)
+    job = r.submit("build", {}, lambda ctx: (_ for _ in ()).throw(UpdaterError("nope")))
+    r.wait(timeout=10)
+    assert job.state == FAILED

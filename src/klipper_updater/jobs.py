@@ -124,6 +124,17 @@ class Job:
     def dropped(self) -> int:
         return self._dropped
 
+    def tail(self, limit: int = 40) -> list[LogLine]:
+        """The last few lines, for a post-mortem in the agent log.
+
+        A failure message names the exit code, not the reason - `pio exited 2`
+        says nothing about which file would not compile. That detail only ever
+        existed in this ring buffer, which is in memory and gone on the next
+        restart, so on failure the tail gets copied somewhere durable.
+        """
+        with self._lock:
+            return list(self._log)[-max(limit, 0) :] if limit > 0 else []
+
     # -- serialisation -----------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
@@ -212,6 +223,27 @@ class JobRunner:
     def busy(self) -> bool:
         return self.current() is not None
 
+    # -- failure reporting -------------------------------------------------
+
+    def _log_failure(self, job: Job, detail: str) -> None:
+        """Write a failed job to the agent log, with enough of its output to act on.
+
+        One record rather than a line per log line: the agent log is shared with
+        everything else the daemon does, and a 40-line build failure interleaved
+        with status polling is unreadable.
+        """
+        if self._log is None:
+            return
+        lines = job.tail()
+        body = "\n".join(f"    {line.text}" for line in lines)
+        self._log.error(
+            "job %s (%s) failed: %s%s",
+            job.id,
+            job.kind,
+            detail,
+            f"\n  last {len(lines)} log line(s):\n{body}" if lines else "",
+        )
+
     # -- submission --------------------------------------------------------
 
     def submit(
@@ -281,6 +313,13 @@ class JobRunner:
                 job.state = FAILED
                 job.error = exc.to_dict()
                 reporter("error", str(exc))
+                # An expected failure is still a failure, and this is the one
+                # that needs reading: a build that will not compile leaves
+                # nothing behind but the job's ring buffer, which is in memory
+                # and gone on the next restart. Only internal crashes used to be
+                # logged, so the failures users actually hit were the ones
+                # absent from mcu-updater.log.
+                self._log_failure(job, str(exc))
             except BaseException as exc:  # noqa: BLE001
                 job.state = FAILED
                 job.error = {
@@ -289,8 +328,7 @@ class JobRunner:
                     "data": {},
                 }
                 reporter("error", f"internal error: {type(exc).__name__}: {exc}")
-                if self._log is not None:
-                    self._log.error("job %s crashed\n%s", job.id, traceback.format_exc())
+                self._log_failure(job, traceback.format_exc())
             finally:
                 job.finished = time.time()
                 try:
