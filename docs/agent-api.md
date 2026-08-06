@@ -93,7 +93,7 @@ application error (see `data.code`), `-32603` internal.
 | `fw.flash` | `serial`, `name?`, `force?` | `{job_id, job}` — **off by default**, see below |
 | `fw.build_all` | `fw?`, `scope?` | `{job_id, job, types}` — builds only, touches no board |
 | `fw.flash_all` | `scope?`, `name?`, `force?` | `{job_id, job, boards}` — **off by default** |
-| `fw.update_all` | `scope?`, `force?` | `{job_id, job, types}` — **off by default** |
+| `fw.update_all` | `scope?`, `name?`, `force?` | `{job_id, job, types}` — **off by default** |
 | `fw.job.get` | `job_id?`, `log_from?` | `{job, log, log_from, log_next, log_dropped}` |
 | `fw.job.cancel` | `job_id?` | `{cancelling, immediate}` |
 
