@@ -102,7 +102,7 @@ def load(paths: Paths, default_source: str = "") -> dict[str, DisplayType]:
 
 def find_pio(settings: Settings) -> str:
     """The PlatformIO launcher, or a clear error naming what to install."""
-    configured = getattr(settings, "platformio_bin", "") or ""
+    configured = settings.platformio_bin
     candidates = ([configured] if configured else []) + list(PIO_CANDIDATES)
     for candidate in candidates:
         found = shutil.which(candidate) if os.path.basename(candidate) == candidate else candidate

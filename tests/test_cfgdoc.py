@@ -314,3 +314,58 @@ def test_a_commented_config_round_trips():
     again = CfgDocument(once)
     again.set("mcu bttebb36", "serials", again.get_list("mcu bttebb36", "serials"))
     assert again.render() == once
+
+
+# --------------------------------------------------------------------------
+# comments after a section header
+#
+# The failure was silent in the worst way: the header line simply did not
+# match, so the section was never registered *and* every option under it was
+# attributed to the section above. A [display ...] written the way the README
+# suggests produced no display at all, with nothing logged.
+# --------------------------------------------------------------------------
+
+
+def test_a_comment_after_a_section_header_does_not_hide_the_section():
+    doc = CfgDocument("[display knomi_toolchanger]        # the env name\nenv: x\n")
+    assert doc.section_names("display") == ["display knomi_toolchanger"]
+    assert doc.get("display knomi_toolchanger", "env") == "x"
+
+
+def test_options_below_a_commented_header_are_not_stolen_by_the_section_above():
+    doc = CfgDocument(
+        "[updater]\n"
+        "service: klipper\n"
+        "\n"
+        "[mcu bttebb36]  # the toolhead boards\n"
+        "chipset: stm32g0b1xx\n"
+    )
+    assert doc.get("mcu bttebb36", "chipset") == "stm32g0b1xx"
+    assert doc.get("updater", "chipset") is None
+
+
+def test_both_comment_markers_work_after_a_header():
+    for marker in ("#", ";"):
+        doc = CfgDocument(f"[mcu board] {marker} a note\nchipset: stm32f072xb\n")
+        assert doc.get("mcu board", "chipset") == "stm32f072xb"
+
+
+def test_a_header_comment_is_not_swallowed_into_the_section_name():
+    doc = CfgDocument("[mcu board]  # a note\n")
+    assert doc.section_names() == ["mcu board"]
+
+
+def test_a_header_comment_survives_an_edit():
+    doc = CfgDocument("[display knomi_toolchanger]  # the PlatformIO env\n")
+    doc.set("display knomi_toolchanger", "source", "~/knomi_serial")
+    out = doc.render()
+    assert "# the PlatformIO env" in out
+    assert doc.get("display knomi_toolchanger", "source") == "~/knomi_serial"
+
+
+def test_a_bracketed_line_that_is_not_a_header_is_still_not_a_section():
+    """The regex got looser; it must not have got loose enough to match prose."""
+    doc = CfgDocument("[updater]\nservice: klipper\n")
+    assert doc.section_names() == ["updater"]
+    for line in ("[unterminated\n", "not [a header]\n", "[a] [b]\n"):
+        assert CfgDocument(line).section_names() == [], line

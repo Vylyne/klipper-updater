@@ -35,6 +35,11 @@
       "name": "existing comments are handed to the renderer on a rewrite",
       "find": "            rendered = self._render(key, value, self.lines[opt.start : opt.end])",
       "replace": "            rendered = self._render(key, value)"
+    },
+    {
+      "name": "a comment may follow a section header",
+      "find": "_SECTION_RE = re.compile(r\"^\\[(?P<name>[^\\]]+)\\]\\s*(?:[#;].*)?$\")",
+      "replace": "_SECTION_RE = re.compile(r\"^\\[(?P<name>[^\\]]+)\\]\\s*$\")"
     }
   ]
 }

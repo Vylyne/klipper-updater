@@ -56,6 +56,14 @@ class Settings:
     #: Per-job log ring buffer size, in lines.
     log_ring_size: int = 2000
 
+    #: Default PlatformIO source tree for every [display <name>] section, so one
+    #: repo shared by every env is written once. A section's own `source:` wins.
+    display_source: str = ""
+
+    #: PlatformIO launcher, if it is somewhere `pio` on PATH and the standard
+    #: ~/.platformio/penv/bin/pio will not find it.
+    platformio_bin: str = ""
+
     @property
     def resolved_jobs(self) -> int:
         """make_jobs, or a sensible auto value if it was set to a negative."""
@@ -75,7 +83,7 @@ _BOOL_FIELDS = {
     "allow_flash_while_printing",
 }
 _INT_FIELDS = {"make_jobs", "log_ring_size"}
-_STR_FIELDS = {"service", "service_backend"}
+_STR_FIELDS = {"service", "service_backend", "display_source", "platformio_bin"}
 _BACKENDS = ("moonraker", "systemd", "null")
 
 

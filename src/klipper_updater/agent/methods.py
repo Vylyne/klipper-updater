@@ -1249,9 +1249,11 @@ class Api:
         """Configured `[display <env>]` sections, with the shared source default."""
         from .. import displays as displays_mod
 
-        settings = self.settings()
-        default = getattr(settings, "display_source", "") or ""
-        return displays_mod.load(self.paths, default_source=default)
+        # Attribute access, not getattr-with-a-default: `display_source` was
+        # documented in the README before it existed on Settings, and the
+        # forgiving lookup meant every display silently came back with no source
+        # tree instead of anything saying so.
+        return displays_mod.load(self.paths, default_source=self.settings().display_source)
 
     def display_build(self, args: dict) -> dict[str, Any]:
         """Compile one display env with PlatformIO. Touches no display."""

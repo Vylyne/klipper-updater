@@ -74,8 +74,9 @@ klipper_makefile_patches:
 `<fw>` is `klipper` or `katapult`.
 
 The `[updater]` section holds `make_jobs`, `clean_before_build`, `service`,
-`service_backend`, `dry_run`, `enable_flashing`, `allow_flash_while_printing`
-and `log_ring_size`. All optional.
+`service_backend`, `dry_run`, `enable_flashing`, `allow_flash_while_printing`,
+`log_ring_size`, and — for ESP32 displays — `display_source` and
+`platformio_bin`. All optional.
 
 **Edit the existing `[updater]` section rather than appending a second one.** A
 duplicate section is refused outright: first-wins would mean

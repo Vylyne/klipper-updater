@@ -30,7 +30,13 @@ import re
 from collections.abc import Iterator
 from typing import Optional
 
-_SECTION_RE = re.compile(r"^\[(?P<name>[^\]]+)\]\s*$")
+#: A comment may follow the header. Klipper's own parser allows it, so a config
+#: sitting next to printer.cfg has to as well - and without this the line simply
+#: did not match, which is silent: the section was never registered, every option
+#: under it was attributed to the section above, and the type or display it
+#: declared just did not exist. `[display knomi_toolchanger]  # env name` is how
+#: the README suggests writing it.
+_SECTION_RE = re.compile(r"^\[(?P<name>[^\]]+)\]\s*(?:[#;].*)?$")
 _OPTION_RE = re.compile(r"^(?P<key>[^\s:=#;][^:=]*?)\s*[:=](?P<value>.*)$")
 _COMMENT_RE = re.compile(r"^\s*[#;]")
 

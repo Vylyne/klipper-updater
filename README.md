@@ -106,6 +106,10 @@ display_source: ~/knomi_serial     # one repo, shared by every env
 [display knomi_toolchanger]        # the section name IS the PlatformIO env
 ```
 
+A section's own `source:` overrides `display_source`, and `platformio_bin` in
+`[updater]` points at `pio` if neither the `PATH` nor
+`~/.platformio/penv/bin/pio` finds it.
+
 The screens themselves are not listed here — `[knomi_serial T0_knomi]` in
 `printer.cfg` already names its port, and a second copy would only be something
 to disagree with.

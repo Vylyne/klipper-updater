@@ -190,3 +190,63 @@ def test_make_flags(jobs, expected):
 def test_negative_jobs_means_auto():
     flags = Settings(make_jobs=-1).make_flags()
     assert len(flags) == 1 and flags[0].startswith("-j")
+
+
+# --------------------------------------------------------------------------
+# display settings
+#
+# `display_source` was documented in the README and read through a
+# `getattr(settings, "display_source", "")` that no field ever satisfied - so
+# every display came back with no source tree and the error blamed the user's
+# [display] section. Both are real fields now, reached by plain attribute
+# access, so the next one that goes missing is an AttributeError.
+# --------------------------------------------------------------------------
+
+
+def test_display_source_is_read_from_the_updater_section(paths):
+    with open(paths.settings_file, "w", encoding="utf-8") as fh:
+        fh.write("[updater]\ndisplay_source: ~/knomi_serial\n")
+    assert load_settings(paths.settings_file).display_source == "~/knomi_serial"
+
+
+def test_a_comment_after_display_source_is_not_part_of_the_path(paths):
+    """The README writes it exactly this way."""
+    with open(paths.settings_file, "w", encoding="utf-8") as fh:
+        fh.write("[updater]\ndisplay_source: ~/knomi_serial     # shared by every env\n")
+    assert load_settings(paths.settings_file).display_source == "~/knomi_serial"
+
+
+def test_platformio_bin_is_read_from_the_updater_section(paths):
+    with open(paths.settings_file, "w", encoding="utf-8") as fh:
+        fh.write("[updater]\nplatformio_bin: /opt/pio/bin/pio\n")
+    assert load_settings(paths.settings_file).platformio_bin == "/opt/pio/bin/pio"
+
+
+def test_display_settings_default_to_empty(paths):
+    s = load_settings(paths.settings_file)
+    assert s.display_source == ""
+    assert s.platformio_bin == ""
+
+
+def test_every_settings_field_the_code_reads_actually_exists():
+    """A getattr-with-a-default cannot tell a missing field from an unset one.
+
+    That is how display_source shipped documented but unread. Nothing outside
+    this module should reach a setting defensively.
+    """
+    import pathlib
+    import re
+
+    # Three-argument getattr only: the trailing comma is the default. The
+    # two-argument form over dataclasses.fields() in save_settings is how that
+    # function is meant to work.
+    defensive = re.compile(r"""getattr\(\s*(?:self\.)?settings(?:\(\))?\s*,\s*["'][^"']+["']\s*,""")
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "klipper_updater"
+    offenders = [
+        f"{path.relative_to(src)}:{n}"
+        for path in src.rglob("*.py")
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if defensive.search(line)
+    ]
+    assert not offenders, f"settings reached defensively at: {offenders}"
