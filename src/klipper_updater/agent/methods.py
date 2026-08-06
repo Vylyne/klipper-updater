@@ -1043,6 +1043,7 @@ class Api:
         "fw.type.list": "type_list",
         "fw.bus.scan": "bus_scan",
         "fw.dfu.scan": "dfu_scan",
+        "fw.knomi.list": "knomi_list",
         "fw.artifacts": "artifacts",
         "fw.settings.get": "settings_get",
         "fw.settings.set": "settings_set",
@@ -1117,6 +1118,62 @@ class Api:
     #: so tests can shrink it without patching a call site, matching
     #: ADD_MCU_REENUMERATE_TIMEOUT and the klippy timeouts.
     PAIRING_TTL = _PAIRING_TTL
+
+    # -- Knomi displays -----------------------------------------------------
+
+    def knomi_list(self, args: dict) -> dict[str, Any]:
+        """The displays Klipper is configured for, and whether they are there.
+
+        **The device list comes from Klipper, not from our registry.** A
+        `[knomi_serial T0_knomi]` section already names the port it uses, so
+        keeping a second copy here would only create something to disagree with.
+        This reads the same `configfile.settings` payload `mcu_info` already
+        fetches for the version join.
+
+        No identity beyond the port, deliberately: every display runs the same
+        image, so which physical unit sits on which port does not change what
+        gets written to it. The port is the whole story for flashing.
+
+        `present` is the field that matters, because the klippy module hides this
+        case. It catches a missing symlink or a device that never enumerated -
+        which otherwise shows up as a display that is simply blank, with Klipper
+        reporting no error at all.
+        """
+        res = self._probe("printer.objects.query", {"objects": {"configfile": ["settings"]}})
+        status = (res or {}).get("status")
+        if not isinstance(status, dict):
+            return {"displays": [], "reachable": False}
+
+        settings = (status.get("configfile") or {}).get("settings") or {}
+        displays = []
+        for section, values in sorted(settings.items()):
+            # Klipper lowercases section names in `settings`, so match lowered.
+            if not section.startswith("knomi_serial "):
+                continue
+            configured = (values or {}).get("serial")
+            if not isinstance(configured, str) or not configured:
+                continue
+
+            # A symlink is the point - resolve it, because the whole scheme is
+            # "a stable name udev keeps pointed at the right tty".
+            resolved = None
+            try:
+                if os.path.exists(configured):
+                    resolved = os.path.realpath(configured)
+            except OSError:
+                resolved = None
+
+            displays.append(
+                {
+                    "name": section[len("knomi_serial ") :],
+                    "section": section,
+                    "configured_path": configured,
+                    "resolved_path": resolved,
+                    "present": resolved is not None,
+                }
+            )
+
+        return {"displays": displays, "reachable": True}
 
     def adopt_paired(self) -> list[dict[str, str]]:
         """Track boards that arrived late from a bootloader install we did.
