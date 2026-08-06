@@ -473,3 +473,61 @@ def test_add_type_applies_the_rule_so_both_front_ends_agree(paths):
     with pytest.raises(InvalidTypeNameError):
         reg.add_type("../escape", "rp2040")
     assert reg.names() == []
+
+
+# --------------------------------------------------------------------------
+# an annotated config
+#
+# Reported from the printer: labelling each serial with its toolhead is the
+# obvious thing to do by hand, and it silently unregistered boards.
+# --------------------------------------------------------------------------
+
+ANNOTATED = """[updater]
+enable_flashing: true   # turned on for the panel
+
+[mcu bttebb36]
+chipset: stm32g0b1xx
+serials:
+    # the two toolhead boards
+    230048001750304158373620-if00  #mcu EBBT0
+    290055001850304158373620-if00  #mcu EBBT1
+"""
+
+
+def test_an_annotated_registry_still_tracks_every_board(paths):
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(ANNOTATED)
+
+    reg = Registry.load(paths)
+    assert reg.get("bttebb36").serials == [
+        "230048001750304158373620-if00",
+        "290055001850304158373620-if00",
+    ]
+
+
+def test_the_labels_survive_adopting_another_board(paths):
+    """The panel's "track this" writes the whole block back. Losing the labels
+    would leave the user unable to tell which serial is which toolhead."""
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(ANNOTATED)
+
+    reg = Registry.load(paths)
+    reg.add_serial("bttebb36", "NEWBOARD-if00")
+    reg.save(paths)
+
+    text = open(paths.registry_file, encoding="utf-8").read()
+    assert "#mcu EBBT0" in text
+    assert "#mcu EBBT1" in text
+    assert "# the two toolhead boards" in text
+    assert Registry.load(paths).get("bttebb36").serials[-1] == "NEWBOARD-if00"
+
+
+def test_an_inline_comment_on_a_setting_is_not_part_of_its_value(paths):
+    """`enable_flashing: true   # turned on` must parse as true, not as the string
+    "true   # turned on" - which parse_bool would reject, silently leaving
+    flashing disabled."""
+    from klipper_updater.settings import load_settings
+
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(ANNOTATED)
+    assert load_settings(paths.settings_file).enable_flashing is True

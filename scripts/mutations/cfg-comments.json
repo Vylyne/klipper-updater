@@ -1,0 +1,40 @@
+{
+  "_comment": "Comment handling in the cfg parser. Each of these was silent data loss.",
+  "file": "src/klipper_updater/cfgdoc.py",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "tests/test_cfgdoc.py",
+    "tests/test_config.py",
+    "tests/test_settings.py",
+    "-q"
+  ],
+  "mutations": [
+    {
+      "name": "an indented comment does not end the block",
+      "find": "                if current_option is not None and _is_continuation(line):\n                    current_option.end = index + 1\n                    continue\n",
+      "replace": ""
+    },
+    {
+      "name": "inline comments are stripped from continuations",
+      "find": "                item = _strip_inline_comment(line.strip())",
+      "replace": "                item = line.strip()"
+    },
+    {
+      "name": "inline comments are stripped from single-line values",
+      "find": "                value = _strip_inline_comment(opt_match.group(\"value\").strip())",
+      "replace": "                value = opt_match.group(\"value\").strip()"
+    },
+    {
+      "name": "the marker must follow whitespace, so a bare # survives",
+      "find": "_INLINE_COMMENT_RE = re.compile(r\"(?:(?<=\\s)|^)[#;].*$\")",
+      "replace": "_INLINE_COMMENT_RE = re.compile(r\"[#;].*$\")"
+    },
+    {
+      "name": "existing comments are handed to the renderer on a rewrite",
+      "find": "            rendered = self._render(key, value, self.lines[opt.start : opt.end])",
+      "replace": "            rendered = self._render(key, value)"
+    }
+  ]
+}

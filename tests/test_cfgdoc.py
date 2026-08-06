@@ -204,3 +204,113 @@ def test_setting_an_empty_list_keeps_the_key_but_no_items():
     doc.set("mcu flylllplusbuffer", "serials", [])
     assert "serials:" in doc.render()
     assert doc.get_list("mcu flylllplusbuffer", "serials") == []
+
+
+# --------------------------------------------------------------------------
+# comments inside a multi-line block
+#
+# Reported from the printer. Labelling each serial with the toolhead it belongs
+# to is the obvious thing to do in a hand-edited config - and it silently broke
+# the registry two different ways.
+# --------------------------------------------------------------------------
+
+COMMENTED = """[mcu bttebb36]
+chipset: stm32g0b1xx
+serials:
+    # the toolhead boards
+    230048001750304158373620-if00  #mcu EBBT0
+    290055001850304158373620-if00 ; EBBT1
+"""
+
+
+def test_a_comment_after_a_serial_is_not_part_of_the_serial():
+    """It became part of the value, so the serial matched nothing on the bus and
+    the board read as permanently offline."""
+    doc = CfgDocument(COMMENTED)
+    assert doc.get_list("mcu bttebb36", "serials") == [
+        "230048001750304158373620-if00",
+        "290055001850304158373620-if00",
+    ]
+
+
+def test_a_comment_on_its_own_line_does_not_end_the_block():
+    """It ended the option, so every serial below it was dropped and the type came
+    back with no boards tracked at all - silent data loss on a config the user had
+    only annotated."""
+    doc = CfgDocument(COMMENTED)
+    assert len(doc.get_list("mcu bttebb36", "serials")) == 2
+
+
+def test_both_comment_markers_are_honoured():
+    """Klipper's own configparser takes `#` and `;`, and this file sits next to
+    printer.cfg - the two must behave the same."""
+    doc = CfgDocument(COMMENTED)
+    assert all("#" not in s and ";" not in s for s in doc.get_list("mcu bttebb36", "serials"))
+
+
+def test_a_hash_without_leading_whitespace_is_kept():
+    """Klipper requires whitespace before an inline comment marker, which is what
+    lets a value contain a bare `#`. A makefile patch is the case that matters."""
+    doc = CfgDocument(
+        "[mcu x]\nklipper_makefile_patches:\n    src/Makefile -> src-y += a#b.c\n"
+    )
+    assert doc.get_list("mcu x", "klipper_makefile_patches") == ["src/Makefile -> src-y += a#b.c"]
+
+
+def test_adopting_a_board_keeps_the_labels_on_the_others():
+    """set() splices the whole block, so without care the panel adopting one board
+    would erase the notes beside every other one - and those notes are how you
+    know which physical toolhead a serial is."""
+    doc = CfgDocument(COMMENTED)
+    doc.set(
+        "mcu bttebb36",
+        "serials",
+        [
+            "230048001750304158373620-if00",
+            "290055001850304158373620-if00",
+            "NEWBOARD-if00",
+        ],
+    )
+    out = doc.render()
+
+    assert "#mcu EBBT0" in out
+    assert "; EBBT1" in out
+    assert "# the toolhead boards" in out
+    assert "NEWBOARD-if00" in out
+    # ...and the values are still clean when read back.
+    assert CfgDocument(out).get_list("mcu bttebb36", "serials") == [
+        "230048001750304158373620-if00",
+        "290055001850304158373620-if00",
+        "NEWBOARD-if00",
+    ]
+
+
+def test_removing_a_board_keeps_the_note_that_followed_it():
+    """A note about a board that was just removed is exactly the one worth
+    keeping - it says why."""
+    doc = CfgDocument(COMMENTED)
+    doc.set("mcu bttebb36", "serials", ["230048001750304158373620-if00"])
+    out = doc.render()
+
+    assert "#mcu EBBT0" in out
+    assert "290055001850304158373620-if00" not in out
+    # The trailing standalone comment survives even with its item gone.
+    assert "# the toolhead boards" in out
+
+
+def test_a_comment_on_a_single_line_value_survives_an_edit():
+    doc = CfgDocument("[updater]\nservice: klipper  # the KIAUH instance name\n")
+    doc.set("updater", "service", "klipper-1")
+    assert "# the KIAUH instance name" in doc.render()
+    assert doc.get("updater", "service") == "klipper-1"
+
+
+def test_a_commented_config_round_trips():
+    """Render, reload, render: annotations must not drift or duplicate."""
+    doc = CfgDocument(COMMENTED)
+    doc.set("mcu bttebb36", "serials", doc.get_list("mcu bttebb36", "serials"))
+    once = doc.render()
+
+    again = CfgDocument(once)
+    again.set("mcu bttebb36", "serials", again.get_list("mcu bttebb36", "serials"))
+    assert again.render() == once

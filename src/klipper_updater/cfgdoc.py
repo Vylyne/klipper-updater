@@ -57,6 +57,22 @@ def parse_bool(raw: Optional[str], default: Optional[bool] = False) -> Optional[
     return None
 
 
+#: An inline comment, matching Klipper's own configparser
+#: (`inline_comment_prefixes=(';', '#')`): a `#` or `;` that either starts the
+#: text or follows whitespace. Requiring the whitespace is what lets a value
+#: containing a bare `#` mid-token survive - a makefile patch line, say.
+_INLINE_COMMENT_RE = re.compile(r"(?:(?<=\s)|^)[#;].*$")
+
+
+def _strip_inline_comment(text: str) -> str:
+    """`290055...-if00  # EBBT1` -> `290055...-if00`.
+
+    Without this the comment became part of the serial, so the board matched
+    nothing on the bus and read as permanently offline.
+    """
+    return _INLINE_COMMENT_RE.sub("", text).rstrip()
+
+
 def _is_comment(line: str) -> bool:
     return bool(_COMMENT_RE.match(line))
 
@@ -133,19 +149,33 @@ class CfgDocument:
 
             current.end = index + 1
 
-            if _is_comment(line) or _is_blank(line):
+            if _is_comment(line):
+                # An INDENTED comment sits inside a multi-line value's block, so
+                # it must not end the option. Ending it here meant every item
+                # below a `# label` line was silently dropped - the serials after
+                # it simply vanished from the registry, and the type came back
+                # with "no boards tracked".
+                if current_option is not None and _is_continuation(line):
+                    current_option.end = index + 1
+                    continue
+                current_option = None
+                continue
+
+            if _is_blank(line):
                 current_option = None
                 continue
 
             if current_option is not None and _is_continuation(line):
                 current_option.end = index + 1
-                current_option.value += "\n" + line.strip()
+                item = _strip_inline_comment(line.strip())
+                if item:
+                    current_option.value += "\n" + item
                 continue
 
             opt_match = _OPTION_RE.match(line)
             if opt_match:
                 key = opt_match.group("key").strip()
-                value = opt_match.group("value").strip()
+                value = _strip_inline_comment(opt_match.group("value").strip())
                 current_option = Option(key, index, index + 1, value)
                 current.options.setdefault(key, current_option)
                 continue
@@ -185,17 +215,73 @@ class CfgDocument:
     # -- writing -----------------------------------------------------------
 
     @staticmethod
-    def _render(key: str, value: object) -> list[str]:
-        if isinstance(value, (list, tuple)):
-            items = [str(v) for v in value if str(v).strip()]
+    def _decoration(existing: Optional[list[str]]) -> tuple[dict, dict, list]:
+        """The comments a multi-line block already carries.
+
+        Rewriting an option splices the whole block, so without this, adopting one
+        board would erase the `# EBBT0` labels the user had put beside every other
+        one. Which is worse than it sounds: those labels are how you know which
+        physical toolhead a serial belongs to.
+
+        Returns (inline per item, standalone comments preceding each item, and any
+        left trailing at the end of the block).
+        """
+        inline: dict[str, str] = {}
+        before: dict[str, list[str]] = {}
+        pending: list[str] = []
+        if not existing:
+            return inline, before, pending
+
+        # existing[0] is the `key:` line itself.
+        for raw in existing[1:]:
+            text = raw.strip()
+            if not text:
+                continue
+            if _COMMENT_RE.match(raw):
+                pending.append(text)
+                continue
+            item = _strip_inline_comment(text)
+            if not item:
+                continue
+            comment = text[len(item) :].strip()
+            if comment:
+                inline[item] = comment
+            if pending:
+                before[item] = pending
+                pending = []
+        return inline, before, pending
+
+    @classmethod
+    def _render(cls, key: str, value: object, existing: Optional[list[str]] = None) -> list[str]:
+        inline, before, trailing = cls._decoration(existing)
+
+        def block(items: list[str]) -> list[str]:
             if not items:
                 return [f"{key}:"]
-            return [f"{key}:"] + [f"{INDENT}{item}" for item in items]
+            out = [f"{key}:"]
+            for item in items:
+                out.extend(f"{INDENT}{c}" for c in before.get(item, []))
+                comment = inline.get(item)
+                out.append(f"{INDENT}{item}" + (f"  {comment}" if comment else ""))
+            # Comments that followed the last item, or the whole block if every
+            # item is gone. Dropping them would lose a note about a board that
+            # was just removed, which is exactly when it is worth keeping.
+            out.extend(f"{INDENT}{c}" for c in trailing)
+            return out
+
+        if isinstance(value, (list, tuple)):
+            return block([str(v) for v in value if str(v).strip()])
         text = str(value)
         if "\n" in text:
-            parts = [p.strip() for p in text.splitlines() if p.strip()]
-            return [f"{key}:"] + [f"{INDENT}{p}" for p in parts]
-        return [f"{key}: {text}"]
+            return block([p.strip() for p in text.splitlines() if p.strip()])
+
+        # Single-line value: keep a trailing comment it already had.
+        comment = ""
+        if existing and len(existing) == 1:
+            body = existing[0].split(":", 1)[-1].split("=", 1)[-1]
+            stripped = _strip_inline_comment(body)
+            comment = body[len(stripped) :].strip()
+        return [f"{key}: {text}" + (f"  {comment}" if comment else "")]
 
     def _splice(self, start: int, end: int, replacement: list[str]) -> None:
         self.lines[start:end] = replacement
@@ -209,11 +295,14 @@ class CfgDocument:
             self.add_section(section)
             sec = self.sections[section]
 
-        rendered = self._render(key, value)
         opt = sec.options.get(key)
         if opt is not None:
+            # Hand it the lines being replaced, so any comments in them survive.
+            rendered = self._render(key, value, self.lines[opt.start : opt.end])
             self._splice(opt.start, opt.end, rendered)
             return
+
+        rendered = self._render(key, value)
 
         # New key: append after the section's last non-blank line, so it lands
         # inside the section rather than after the blank line separating it from
