@@ -1,0 +1,34 @@
+{
+  "_comment": "Display upload guards. Firmware written to the wrong screen is the failure these prevent.",
+  "file": "src/klipper_updater/displays.py",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "tests/test_displays.py",
+    "tests/test_agent_display_jobs.py",
+    "-q"
+  ],
+  "mutations": [
+    {
+      "name": "an upload without a port is refused",
+      "find": "    if not port:\n        raise FlashError(",
+      "replace": "    if False:\n        raise FlashError("
+    },
+    {
+      "name": "the upload command pins the port",
+      "find": "\"-t\", \"upload\", \"--upload-port\", port]",
+      "replace": "\"-t\", \"upload\"]"
+    },
+    {
+      "name": "a non-zero exit is a failure, not a success",
+      "find": "    if rc != 0:\n        raise FlashError(",
+      "replace": "    if False:\n        raise FlashError("
+    },
+    {
+      "name": "a blank MAC never overwrites a good record",
+      "find": "    if not mac:\n        return None",
+      "replace": "    if False:\n        return None"
+    }
+  ]
+}

@@ -146,6 +146,22 @@ class Paths:
         return os.path.join(self.data_dir, ".dfu-pairings.json")
 
     @property
+    def display_macs_file(self) -> str:
+        """Which display (by MAC) was last flashed on which port.
+
+        A display's MAC is in efuse, so it survives reflashing - and the CH340 in
+        front of it has no serial to offer, so this is the only durable identity
+        one has. Recorded on every upload, which is the only moment it is
+        obtainable: esptool reads it over the ROM handshake, and that needs the
+        port free, which means Klipper stopped.
+
+        Its use is noticing a swap. Two tophat boards plugged into each other's
+        sockets moves every display on them at once, and nothing else would say
+        so.
+        """
+        return os.path.join(self.data_dir, ".display-macs.json")
+
+    @property
     def journal_file(self) -> str:
         """Records "klipper was stopped by us" so a crashed run can be reconciled."""
         return os.path.join(self.data_dir, ".updater.state")

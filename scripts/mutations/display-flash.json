@@ -1,0 +1,23 @@
+{
+  "_comment": "Display flash gates in the agent.",
+  "file": "src/klipper_updater/agent/methods.py",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "tests/test_agent_display_jobs.py",
+    "-q"
+  ],
+  "mutations": [
+    {
+      "name": "no reachable screen is refused before stopping klipper",
+      "find": "        if not targets:\n            raise RpcError(",
+      "replace": "        if False:\n            raise RpcError("
+    },
+    {
+      "name": "the idle gate applies to displays too",
+      "find": "        assert_printer_idle(\n            settings,\n            activity=self._printer_activity,\n            force=bool(args.get(\"force\")),\n            reporter=self._log_reporter,\n        )\n\n        def run(ctx) -> dict[str, Any]:\n            from .. import displays as displays_mod",
+      "replace": "        def run(ctx) -> dict[str, Any]:\n            from .. import displays as displays_mod"
+    }
+  ]
+}

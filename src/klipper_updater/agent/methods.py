@@ -1044,6 +1044,8 @@ class Api:
         "fw.bus.scan": "bus_scan",
         "fw.dfu.scan": "dfu_scan",
         "fw.display.list": "display_list",
+        "fw.display.build": "display_build",
+        "fw.display.flash": "display_flash",
         "fw.artifacts": "artifacts",
         "fw.settings.get": "settings_get",
         "fw.settings.set": "settings_set",
@@ -1083,13 +1085,21 @@ class Api:
         "fw.flash_all",
         "fw.update_all",
         "fw.add_mcu.start",
+        "fw.display.build",
+        "fw.display.flash",
     )
 
     #: Advertised only when enable_flashing is on. The panel hides its flash
     #: buttons accordingly, rather than offering something that gets refused.
     #: add_mcu.start writes a bootloader to a board, so it belongs here too - even
     #: though the board is not yet one of ours.
-    FLASH_METHODS = ("fw.flash", "fw.flash_all", "fw.update_all", "fw.add_mcu.start")
+    FLASH_METHODS = (
+        "fw.flash",
+        "fw.flash_all",
+        "fw.update_all",
+        "fw.add_mcu.start",
+        "fw.display.flash",
+    )
 
     def available_methods(self) -> dict[str, str]:
         out = dict(self.METHODS)
@@ -1174,6 +1184,164 @@ class Api:
             )
 
         return {"displays": displays, "reachable": True}
+
+    def display_types(self) -> dict:
+        """Configured `[display <env>]` sections, with the shared source default."""
+        from .. import displays as displays_mod
+
+        settings = self.settings()
+        default = getattr(settings, "display_source", "") or ""
+        return displays_mod.load(self.paths, default_source=default)
+
+    def display_build(self, args: dict) -> dict[str, Any]:
+        """Compile one display env with PlatformIO. Touches no display."""
+        runner = self._require_runner()
+        name = self._require_str(args, "name")
+        types = self.display_types()
+        if name not in types:
+            raise RpcError(
+                f"no display type '{name}' is configured.",
+                data={
+                    "code": "unknown_type",
+                    "message": "no such display type",
+                    "data": {"name": name, "known": sorted(types)},
+                },
+            )
+        display = types[name]
+
+        def run(ctx) -> dict[str, Any]:
+            from .. import displays as displays_mod
+
+            ctx.step(f"Building {display.env}", 0, 1)
+            path = displays_mod.build(
+                self.paths, self.settings(), display, reporter=ctx.reporter, cancel=ctx.cancel
+            )
+            ctx.step(f"Built {display.env}", 1, 1)
+            return {"name": name, "env": display.env, "firmware": path}
+
+        job = runner.submit("display_build", {"name": name}, run)
+        return {"job_id": job.id, "job": job.to_dict()}
+
+    def display_flash(self, args: dict) -> dict[str, Any]:
+        """Write a display env to its configured screens.
+
+        **The device list is read before Klipper is stopped, not after.** It comes
+        from `configfile.settings`, which only a *running* Klipper can answer - so
+        stopping first would leave nothing to flash. Every other flow in this file
+        can query mid-job; this one cannot.
+
+        Klipper is stopped for the batch because the klippy module holds the port
+        open, and esptool cannot have it while it does.
+        """
+        runner = self._require_runner()
+        settings = self.settings()
+        if not settings.enable_flashing:
+            raise RpcError(
+                "flashing from the web UI is disabled. Set 'enable_flashing = true' in "
+                f"{self.paths.settings_file} to allow it.",
+                data={
+                    "code": "flashing_disabled",
+                    "message": "enable_flashing is false",
+                    "data": {"settings_file": self.paths.settings_file},
+                },
+            )
+
+        name = self._require_str(args, "name")
+        types = self.display_types()
+        if name not in types:
+            raise RpcError(
+                f"no display type '{name}' is configured.",
+                data={"code": "unknown_type", "message": "no such display type",
+                      "data": {"name": name, "known": sorted(types)}},
+            )
+        display = types[name]
+
+        # Read the screens NOW, while Klipper can still answer.
+        listed = self.display_list({})
+        wanted = args.get("port")
+        targets = [
+            d
+            for d in listed["displays"]
+            if d["present"] and (wanted is None or d["configured_path"] == str(wanted))
+        ]
+        if not targets:
+            raise RpcError(
+                "no display is reachable to flash. Check that the configured ports "
+                "exist - fw.display.list shows which are missing.",
+                data={
+                    "code": "nothing_to_do",
+                    "message": "no reachable displays",
+                    "data": {"displays": listed["displays"], "reachable": listed["reachable"]},
+                },
+            )
+
+        from ..service import assert_printer_idle
+
+        assert_printer_idle(
+            settings,
+            activity=self._printer_activity,
+            force=bool(args.get("force")),
+            reporter=self._log_reporter,
+        )
+
+        def run(ctx) -> dict[str, Any]:
+            from .. import displays as displays_mod
+            from ..service import klipper_stopped, make_controller
+
+            settings_now = self.settings()
+            svc = make_controller(settings_now, call=self._call_for_service)
+            flashed: list[dict] = []
+            failures: list[dict] = []
+            moved: list[dict] = []
+            total = len(targets)
+
+            with klipper_stopped(
+                self.paths, svc, f"flash {total} display(s)", reporter=ctx.reporter
+            ):
+                for index, target in enumerate(targets):
+                    ctx.check_cancelled()
+                    ctx.step(f"Flashing {target['name']}", index, total)
+                    port = target["configured_path"]
+                    try:
+                        result = displays_mod.upload(
+                            self.paths,
+                            settings_now,
+                            display,
+                            port,
+                            reporter=ctx.reporter,
+                        )
+                    except OperationCancelled:
+                        raise
+                    except UpdaterError as exc:
+                        ctx.reporter("warn", f"{target['name']}: {exc}")
+                        failures.append({"name": target["name"], "port": port, "error": str(exc)})
+                        continue
+
+                    previous = displays_mod.record_mac(
+                        self.paths, port, result.get("mac"), display.env
+                    )
+                    if previous:
+                        # Not an error, and not fatal: the write succeeded. But a
+                        # different display answering on this port means something
+                        # was re-cabled, and nothing else would ever say so.
+                        ctx.reporter(
+                            "warn",
+                            f"{target['name']} on {port} is now MAC {result.get('mac')}, "
+                            f"was {previous} - a display appears to have moved.",
+                        )
+                        moved.append(
+                            {"name": target["name"], "port": port,
+                             "was": previous, "now": result.get("mac")}
+                        )
+                    flashed.append({"name": target["name"], **result})
+                ctx.step(f"Flashed {len(flashed)} of {total}", total, total)
+
+            ctx.reporter("info", "Waiting for Klipper to be ready...")
+            self._await_klippy_ready(ctx.reporter)
+            return {"env": display.env, "flashed": flashed, "failures": failures, "moved": moved}
+
+        job = runner.submit("display_flash", {"name": name, "count": len(targets)}, run)
+        return {"job_id": job.id, "job": job.to_dict(), "displays": targets}
 
     def adopt_paired(self) -> list[dict[str, str]]:
         """Track boards that arrived late from a bootloader install we did.
