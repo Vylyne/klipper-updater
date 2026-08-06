@@ -1411,17 +1411,24 @@ class Api:
             )
         return scope
 
-    def _types_to_build(self, reg: Registry, fw: str, scope: str) -> list[str]:
+    def _types_to_build(
+        self, reg: Registry, fw: str, scope: str, only: Optional[str] = None
+    ) -> list[str]:
         """Which types a build_all should touch, and in a stable order.
 
         A type with no saved config is skipped rather than failed: menuconfig is
         ncurses and cannot run here, so there is nothing this could do about it, and
         failing the whole batch over one unconfigured type would be worse.
+
+        `only` narrows it to a single type, which is what makes "update this one
+        board type" the same operation with a filter rather than another loop.
         """
         from ..build import staleness
 
         out = []
         for name in reg.names():
+            if only is not None and name != only:
+                continue
             if not os.path.exists(self.paths.config_file(name, fw)):
                 continue
             if scope == "all":
@@ -1672,7 +1679,11 @@ class Api:
         Composed from the same two routines the individual operations use, rather
         than a third implementation of the loop. Its purpose is a klipper update, so
         `stale` here means the source tree moved; the artifact-hash precision
-        matters more to flash_type after a patch change.
+        matters more to a single-type flash after a patch change.
+
+        `name` narrows both halves to one type - "rebuild this board type and flash
+        its boards", which is the same operation with a filter rather than a third
+        one to keep in step.
         """
         runner = self._require_runner()
         settings = self.settings()
@@ -1688,8 +1699,12 @@ class Api:
             )
 
         scope = self._scope(args)
+        only = args.get("name")
         reg = self.registry()
-        names = self._types_to_build(reg, "klipper", scope)
+        if only is not None:
+            reg.get(str(only))  # fail fast on a typo, before a job exists
+            only = str(only)
+        names = self._types_to_build(reg, "klipper", scope, only)
 
         from ..service import assert_printer_idle
 
@@ -1709,7 +1724,7 @@ class Api:
             # Selected *after* building, because a build is what makes boards stale:
             # choosing the boards up front would use provenance that the build has
             # just invalidated.
-            boards = self._boards_to_flash(self.registry(), scope)
+            boards = self._boards_to_flash(self.registry(), scope, only)
             if not boards:
                 ctx.reporter("info", "No board needs flashing.")
                 return {"build": build_result, "flash": {"flashed": [], "failures": []}}
@@ -1725,8 +1740,8 @@ class Api:
             )
             return {"build": build_result, "flash": self._do_flash_all(ctx, boards)}
 
-        job = runner.submit("update_all", {"scope": scope, "types": names}, run)
-        return {"job_id": job.id, "job": job.to_dict(), "types": names}
+        job = runner.submit("update_all", {"scope": scope, "name": only, "types": names}, run)
+        return {"job_id": job.id, "job": job.to_dict(), "types": names, "name": only}
 
     # -- what is actually running on the boards -----------------------------
 

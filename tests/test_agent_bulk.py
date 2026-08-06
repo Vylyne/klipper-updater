@@ -560,3 +560,53 @@ def monkey_head(api, paths):
         float("inf"),
         HEAD,
     )
+
+
+# --------------------------------------------------------------------------
+# narrowing update_all to one type
+#
+# "Rebuild this board type and flash its boards" is the same operation with a
+# filter, exactly as flash_all {name} is - not a third loop to keep in step.
+# --------------------------------------------------------------------------
+
+
+def test_update_all_can_be_narrowed_to_one_type(bulk, paths, fake_root):
+    _save_config(paths, EBB)
+    _save_config(paths, MMB)
+    make_device(fake_root / "bus", "Klipper", EBB_CHIPSET, EBB_A)
+    make_device(fake_root / "bus", "Klipper", EBB_CHIPSET, MMB_SERIAL)
+    bulk._call = _moonraker({EBB_A: OLD_VERSION, MMB_SERIAL: OLD_VERSION})
+    monkey_head(bulk, paths)
+
+    res = bulk.dispatch("fw.update_all", {"name": MMB})
+    assert res["types"] == [MMB], "only the named type is built"
+    assert bulk.runner.wait(timeout=60)
+    job = bulk.runner.get(res["job_id"])
+
+    assert job.state == "succeeded", job.error
+    assert job.result["build"]["built"] == [MMB]
+    # ...and only its boards are written to.
+    assert [f["serial"] for f in job.result["flash"]["flashed"]] == [MMB_SERIAL]
+
+
+def test_narrowing_to_an_unknown_type_fails_before_a_job(bulk):
+    with pytest.raises(RpcError):
+        bulk.dispatch("fw.update_all", {"name": "nosuchtype"})
+    assert bulk.runner.current() is None
+
+
+def test_without_a_name_it_is_still_the_whole_fleet(bulk, paths, fake_root):
+    _save_config(paths, EBB)
+    _save_config(paths, MMB)
+    make_device(fake_root / "bus", "Klipper", EBB_CHIPSET, EBB_A)
+    make_device(fake_root / "bus", "Klipper", EBB_CHIPSET, MMB_SERIAL)
+    bulk._call = _moonraker({EBB_A: OLD_VERSION, MMB_SERIAL: OLD_VERSION})
+    monkey_head(bulk, paths)
+
+    res = bulk.dispatch("fw.update_all", {})
+    assert sorted(res["types"]) == sorted([EBB, MMB])
+    assert bulk.runner.wait(timeout=60)
+    job = bulk.runner.get(res["job_id"])
+    assert sorted(f["serial"] for f in job.result["flash"]["flashed"]) == sorted(
+        [EBB_A, MMB_SERIAL]
+    )
