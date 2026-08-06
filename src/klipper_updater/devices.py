@@ -189,6 +189,41 @@ def find_untracked(
     return out
 
 
+def dfu_serial_for(serial: str) -> Optional[str]:
+    """What a board with this by-id serial calls itself while in DFU mode.
+
+    An STM32 reports a *different* serial in DFU than it does running firmware,
+    and the DFU one is **derived, not truncated** - which is why they look
+    unrelated:
+
+        27000E000551343438333339-if00   running Klipper or Katapult
+        3941335F3434                    the same board in DFU
+
+    ST's own `Get_SerialNum()` builds the DFU string from the 96-bit unique id:
+    the first and third words are summed and printed as eight hex digits, then
+    the **top** four nibbles of the second word are appended. Little-endian, as
+    the words sit in memory.
+
+    This matters because a board in DFU has no `/dev/serial/by-id` name, so
+    without it there is nothing to connect `3941335F3434` to any board you know
+    about - which is exactly the "which one is this?" problem that makes several
+    boards in DFU at once so awkward.
+
+    Returns None for anything that isn't a 96-bit id, rather than guessing.
+    """
+    uid = serial.split("-", 1)[0]
+    if len(uid) != 24:
+        return None
+    try:
+        raw = bytes.fromhex(uid)
+    except ValueError:
+        return None
+    word0 = int.from_bytes(raw[0:4], "little")
+    word1 = int.from_bytes(raw[4:8], "little")
+    word2 = int.from_bytes(raw[8:12], "little")
+    return f"{(word0 + word2) & 0xFFFFFFFF:08X}{word1 >> 16:04X}"
+
+
 def expected_path(fw_name: str, chipset: str, serial: str) -> str:
     """Reconstructed path, for error messages only.
 

@@ -194,6 +194,68 @@ def test_the_probe_never_raises_whatever_dfu_util_does(api, monkeypatch):
         assert isinstance(res["ready"], bool)
 
 
+# --------------------------------------------------------------------------
+# naming the board in DFU
+#
+# `3941335F3434` connects to nothing on its own. But it is derived from the same
+# unique id the running serial is built from, so a tracked board can be named -
+# which is the whole difficulty with several boards in DFU at once.
+# --------------------------------------------------------------------------
+
+#: 27000E000551343438333339-if00 in DFU. Same board as ONE_BOARD's serial.
+KNOWN_UID = "27000E000551343438333339-if00"
+
+
+def test_a_tracked_board_in_dfu_is_named(paths, live_registry_text, monkeypatch):
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    api = Api(paths)
+    api.dispatch("fw.serial.add", {"name": "bttebb36", "serial": KNOWN_UID})
+
+    patch_dfu(monkeypatch, stdout=ONE_BOARD)
+    device = api.dispatch("fw.dfu.scan")["devices"][0]
+
+    assert device["tracked_by"] == "bttebb36"
+    assert device["known_serial"] == KNOWN_UID
+
+
+def test_an_unrecognised_board_is_simply_unnamed(api, monkeypatch):
+    """Which is what a genuinely new board looks like - useful in itself, and not
+    an error."""
+    patch_dfu(monkeypatch, stdout=ONE_BOARD)
+    device = api.dispatch("fw.dfu.scan")["devices"][0]
+
+    assert device["tracked_by"] is None
+    assert device["known_serial"] is None
+
+
+def test_two_known_boards_mapping_to_one_dfu_serial_name_neither(
+    paths, live_registry_text, monkeypatch
+):
+    """The derivation sums two of the three id words, so a collision is possible.
+    An unlabelled board is a small annoyance; a board labelled as the wrong one is
+    how you flash the toolhead you meant to leave alone.
+    """
+    from klipper_updater.devices import dfu_serial_for
+
+    with open(paths.registry_file, "w", encoding="utf-8") as fh:
+        fh.write(live_registry_text)
+    api = Api(paths)
+
+    # Constructed to collide: swapping w0 and w2 leaves the sum unchanged.
+    twin = "38333339" + "05513434" + "27000E00" + "-if00"
+    assert dfu_serial_for(twin) == dfu_serial_for(KNOWN_UID)
+
+    api.dispatch("fw.serial.add", {"name": "bttebb36", "serial": KNOWN_UID})
+    api.dispatch("fw.serial.add", {"name": "bttmmbv1", "serial": twin})
+
+    patch_dfu(monkeypatch, stdout=ONE_BOARD)
+    device = api.dispatch("fw.dfu.scan")["devices"][0]
+
+    assert device["tracked_by"] is None, "ambiguous means unnamed, never a guess"
+    assert device["known_serial"] is None
+
+
 def test_the_probe_is_available_to_a_read_only_agent(api):
     """It runs `dfu-util -l` and nothing else. Diagnosing why a board cannot be
     seen is exactly what someone with a read-only install needs."""

@@ -1112,6 +1112,39 @@ class Api:
     DFU_NONE = "none"
     DFU_AMBIGUOUS = "ambiguous"
 
+    def _identify_dfu(self, devices: list) -> None:
+        """Name the boards in DFU that we already know about.
+
+        A DFU device has no `/dev/serial/by-id` name, so `3941335F3434` connects
+        to nothing on its own - which is what makes several boards in DFU at once
+        so awkward to tell apart. But the DFU serial is *derived* from the same
+        unique id the running serial is built from, so every tracked board's DFU
+        name can be computed and matched.
+
+        A board that matches nothing is not an error - that is what a genuinely
+        new board looks like, and saying so is useful in itself.
+
+        The derivation sums two of the three id words, so a collision is possible
+        in principle. Two known boards mapping to one DFU serial therefore names
+        neither: an unlabelled board is a small annoyance, and a board labelled as
+        the wrong one is how you flash the toolhead you meant to leave alone.
+        """
+        from ..devices import dfu_serial_for
+
+        owners: dict[str, list[tuple[str, str]]] = {}
+        for name, mcu in self.registry().types.items():
+            for serial in mcu.serials:
+                computed = dfu_serial_for(serial)
+                if computed:
+                    owners.setdefault(computed, []).append((name, serial))
+
+        for device in devices:
+            device["known_serial"] = None
+            device["tracked_by"] = None
+            matches = owners.get(str(device.get("serial") or ""), [])
+            if len(matches) == 1:
+                device["tracked_by"], device["known_serial"] = matches[0]
+
     def dfu_scan(self, args: dict) -> dict[str, Any]:
         """What is sitting in DFU mode, and can this agent actually open it?
 
@@ -1168,6 +1201,7 @@ class Api:
             out["message"] = str(exc)
             return out
 
+        self._identify_dfu(devices)
         out["devices"] = devices
         out["count"] = len(devices)
         if not devices:

@@ -168,3 +168,53 @@ def test_a_board_in_its_bootloader_is_adoptable(paths, fake_root):
     add-mcu leaves behind, so it is the thing most likely to need adopting."""
     make_device(fake_root / "bus", "katapult", "stm32g0b1xx", "NEWBOARD-if00")
     assert scan(paths)[0].is_mcu is True
+
+
+# --------------------------------------------------------------------------
+# the DFU serial
+#
+# An STM32 reports a different serial in DFU than it does running firmware, and
+# it is derived rather than truncated - which is why they look unrelated and why
+# a board in DFU seems to connect to nothing you know about.
+# --------------------------------------------------------------------------
+
+
+def test_the_dfu_serial_is_derived_from_the_running_one():
+    """Captured from a real BTT EBB36: dfu-util reported 3941335F3434, and the
+    same board came back as 27000E000551343438333339-if00."""
+    from klipper_updater.devices import dfu_serial_for
+
+    assert dfu_serial_for("27000E000551343438333339-if00") == "3941335F3434"
+
+
+def test_it_works_without_the_interface_suffix():
+    from klipper_updater.devices import dfu_serial_for
+
+    assert dfu_serial_for("27000E000551343438333339") == "3941335F3434"
+
+
+def test_the_words_are_little_endian_and_the_second_takes_its_TOP_nibbles():
+    """Both halves of ST's Get_SerialNum, pinned separately - either read the
+    wrong way round still produces twelve plausible hex digits, which would
+    mislabel a board rather than fail."""
+    from klipper_updater.devices import dfu_serial_for
+
+    # w0 = 0x00000001, w1 = 0xAABBCCDD, w2 = 0x00000002 -> sum 3, top of w1 AABB
+    uid = "01000000" + "DDCCBBAA" + "02000000"
+    assert dfu_serial_for(uid) == "00000003AABB"
+
+
+def test_the_sum_wraps_at_32_bits():
+    from klipper_updater.devices import dfu_serial_for
+
+    uid = "FFFFFFFF" + "00000000" + "02000000"
+    assert dfu_serial_for(uid) == "000000010000"
+
+
+def test_anything_that_is_not_a_96_bit_id_gets_no_answer():
+    """None rather than a guess: a wrong label is worse than no label."""
+    from klipper_updater.devices import dfu_serial_for
+
+    assert dfu_serial_for("short-if00") is None
+    assert dfu_serial_for("ZZ000E000551343438333339-if00") is None
+    assert dfu_serial_for("") is None
