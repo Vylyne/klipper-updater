@@ -103,6 +103,30 @@ and the two details that look cosmetic are not:
 anything, so a mistake here fails loudly instead of publishing a release nobody
 is ever offered.
 
+**Never `git push --tags`.** `git fetch upstream --tags` brings in ~95 of
+upstream's own release tags, and they are worth having locally — they are how you
+know what upstream has shipped. Pushing them to the fork is the problem: the
+release workflow used to trigger on `v*`, so one `--tags` would have fired ~95
+builds. It now triggers on `v*-vylyne.*` only, so an accidental push is a no-op —
+but push tags one at a time regardless:
+
+```bash
+git push origin v2.18.5-vylyne.1     # yes
+git push --tags                      # no
+```
+
+## Keeping up with upstream
+
+`ku-upstream-sync.yml` runs daily. It rebases `ku/stable` onto
+`upstream/master` **on a scratch branch**, runs every gate against the result,
+and then either opens a PR (clean, and green) or an issue (conflicts, or the
+gates failed). It never touches `ku/stable`: landing a rebase means a force-push
+to the branch releases are cut from, which is not an unattended operation.
+
+The gates matter more than the conflict check. A rebase that applies cleanly and
+then fails to build is upstream having changed something the panel depends on —
+invisible to a merge check, and the case worth hearing about early.
+
 To refresh an upstream PR: `git switch ku/develop && git cherry-pick <the 5>`.
 
 **Check for API drift before starting any phase.** Upstream has a live
