@@ -125,12 +125,22 @@ Two things to know:
   see. The resolution happens at the moment of the write, with Klipper already
   stopped, and is printed to the log — the stable name stays what the config
   names and what the MAC record is keyed on.
-- **PlatformIO is told not to go hunting for another port.** The board manifest
-  for a native-USB ESP32-S3 asks it to reset and adopt whatever new port
-  appears; a Knomi v2 drives its LCD from those USB pins and talks over a CH340
-  that never leaves the bus, so the upload used to die waiting for a port that
-  was never coming. Adopting a rediscovered port would also defeat the pinning
-  above.
+- **A UART-attached ESP32 needs one line in its `platformio.ini`.** The board
+  manifest for a native-USB ESP32-S3 asks PlatformIO to reset the board and then
+  adopt whatever *new* serial port appears. A Knomi v2 drives its LCD from those
+  USB pins and talks over a CH340, which stays on the bus and keeps the same
+  port — so nothing new ever appears and the upload times out on a healthy
+  screen. Put this in the env:
+
+  ```ini
+  [env:knomi_toolchanger]
+  board_upload.wait_for_upload_port = no
+  ```
+
+  It can only go there. `board_upload.*` is a `platformio.ini` setting and
+  `pio run` has no command-line override for it (`--project-option` belongs to
+  `pio ci` and `pio project init`). An upload that hits this is recognised and
+  the error names the file, the section and the line to add.
 - **A missing screen is otherwise invisible.** The klippy module runs as a no-op
   when a port won't open, so Klipper starts happily with a blank display and no
   error. `fw.display.list` is the only thing that says so.

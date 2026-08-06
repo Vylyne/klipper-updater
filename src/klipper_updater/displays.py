@@ -51,6 +51,17 @@ _MAC_RE = re.compile(r"^MAC:\s*((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})\s*$", re.M
 #: `Chip is ESP32-S3 (QFN56) (revision v0.2)`
 _CHIP_RE = re.compile(r"^Chip is (.+?)\s*$", re.MULTILINE)
 
+#: PlatformIO giving up inside WaitForNewSerialPort. The board manifest for a
+#: native-USB ESP32-S3 tells it to reset the board and then adopt whatever *new*
+#: serial port appears. A display wired through a CH340 keeps the same port -
+#: the CH340 is a separate always-powered chip and never leaves the bus - so no
+#: new port ever appears and it times out on a perfectly healthy screen.
+#:
+#: Matched so the failure can explain itself. It cannot be fixed from here:
+#: board_upload.* is settable only in platformio.ini, and `pio run` has no
+#: option to override it.
+_WAITING_FOR_PORT_RE = re.compile(r"Couldn't find a board on the selected port", re.I)
+
 
 @dataclasses.dataclass
 class DisplayType:
@@ -248,16 +259,12 @@ def upload(
             "upload",
             "--upload-port",
             target,
-            # PlatformIO's board manifest for a native-USB ESP32-S3 asks it to
-            # reset the board and then adopt whatever *new* serial port appears.
-            # Two things are wrong with that here. A Knomi v2 drives its LCD from
-            # the native USB pins and talks over a CH340, which never leaves the
-            # bus, so no new port ever appears and the upload dies waiting for
-            # one. And adopting a rediscovered port is precisely what this
-            # function refuses to do - the port is pinned so that an upload
-            # cannot land on the wrong one of several identical displays.
-            "--project-option",
-            "board_upload.wait_for_upload_port=no",
+            # Nothing else goes here. `pio run` takes no --project-option - that
+            # belongs to `pio ci` and `pio project init` - and an invalid flag
+            # makes pio exit before it touches the board, wasting a whole
+            # Klipper stop/start cycle. board_upload.* can only be set in
+            # platformio.ini; see _WAITING_FOR_PORT_RE for the failure that
+            # causes and the message that explains it.
         ],
         cwd=source,
         reporter=capture,
@@ -270,6 +277,22 @@ def upload(
     chip = _CHIP_RE.search(text)
 
     if rc != 0:
+        if _WAITING_FOR_PORT_RE.search(text):
+            raise FlashError(
+                f"upload failed for display '{display.name}' on {port}: PlatformIO reset "
+                f"the board and then waited for a *new* serial port to appear. One never "
+                f"will - this display talks through a CH340, which stays on the bus and "
+                f"keeps the same port.\n"
+                f"Add this to the [env:{display.env}] section of "
+                f"{os.path.join(source, 'platformio.ini')}:\n"
+                f"    board_upload.wait_for_upload_port = no\n"
+                f"It has to go there: board_upload.* is a platformio.ini setting and "
+                f"'pio run' has no command-line option for it.",
+                type=display.name,
+                port=port,
+                returncode=rc,
+                remedy="board_upload.wait_for_upload_port = no",
+            )
         raise FlashError(
             f"upload failed for display '{display.name}' on {port}: pio exited {rc}.",
             type=display.name,

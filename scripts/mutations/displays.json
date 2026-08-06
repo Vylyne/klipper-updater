@@ -22,8 +22,8 @@
     },
     {
       "name": "a non-zero exit is a failure, not a success",
-      "find": "    if rc != 0:\n        raise FlashError(",
-      "replace": "    if False:\n        raise FlashError("
+      "find": "    if rc != 0:\n        if _WAITING_FOR_PORT_RE.search(text):",
+      "replace": "    if False:\n        if _WAITING_FOR_PORT_RE.search(text):"
     },
     {
       "name": "a blank MAC never overwrites a good record",
@@ -36,14 +36,14 @@
       "replace": "    target = port"
     },
     {
-      "name": "platformio is told not to adopt a rediscovered port",
-      "find": "            \"--project-option\",\n            \"board_upload.wait_for_upload_port=no\",\n",
-      "replace": ""
-    },
-    {
       "name": "the stable name stays the reported identity, not the resolved one",
       "find": "        \"port\": port,\n        \"mac\":",
       "replace": "        \"port\": target,\n        \"mac\":"
+    },
+    {
+      "name": "waiting-for-a-new-port is explained, not left as exit 2",
+      "find": "        if _WAITING_FOR_PORT_RE.search(text):",
+      "replace": "        if False:"
     }
   ]
 }

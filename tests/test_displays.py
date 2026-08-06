@@ -358,14 +358,13 @@ def test_a_port_that_is_not_a_symlink_is_passed_through_unchanged(
     assert not any("->" in line for line in lines)
 
 
-def test_platformio_is_told_not_to_go_looking_for_another_port(
+def test_the_upload_command_carries_no_option_pio_run_does_not_have(
     paths, settings, display, monkeypatch
 ):
-    """The board manifest asks it to reset and adopt whatever new port appears.
+    """`--project-option` belongs to `pio ci` and `pio project init`, not `pio run`.
 
-    A Knomi v2 talks over a CH340 that never leaves the bus, so no new port ever
-    appears and the upload dies waiting. Adopting a rediscovered port is also
-    exactly what this function exists to prevent.
+    Passing it made pio exit 2 before touching the board - which costs a whole
+    Klipper stop/start cycle, because the batch has already stopped it by then.
     """
     commands = []
     monkeypatch.setattr(displays, "run_streamed", lambda cmd, **kw: commands.append(cmd) or 0)
@@ -374,8 +373,62 @@ def test_platformio_is_told_not_to_go_looking_for_another_port(
     displays.upload(paths, settings, display, "/dev/ttyUSB0")
 
     cmd = commands[0]
-    assert "board_upload.wait_for_upload_port=no" in cmd
-    assert cmd[cmd.index("board_upload.wait_for_upload_port=no") - 1] == "--project-option"
+    assert "--project-option" not in cmd
+    assert not any(arg.startswith("board_upload.") for arg in cmd)
+    # Only the flags `pio run` actually accepts.
+    assert set(a for a in cmd if a.startswith("--")) == {"--upload-port"}
+
+
+def test_waiting_for_a_new_port_is_explained_rather_than_reported_as_exit_2(
+    paths, settings, display, monkeypatch
+):
+    """The one failure the tool cannot fix for you, so it has to say where to fix it.
+
+    board_upload.* is settable only in platformio.ini - there is no `pio run`
+    option for it - so an unadorned "pio exited 1" leaves the user with nothing.
+    """
+    transcript = [
+        "Forcing reset using 1200bps open/close on port /dev/ttyUSB0",
+        "Waiting for the new upload port...",
+        "Error: Couldn't find a board on the selected port. Check that you have the "
+        "correct port selected.",
+    ]
+
+    def fake(cmd, **kwargs):
+        for line in transcript:
+            kwargs["reporter"]("stdout", line)
+        return 1
+
+    monkeypatch.setattr(displays, "run_streamed", fake)
+    monkeypatch.setattr(displays, "find_pio", lambda s: "/usr/bin/pio")
+
+    with pytest.raises(FlashError) as exc:
+        displays.upload(paths, settings, display, "/dev/knomi_t0")
+
+    message = str(exc.value)
+    assert "board_upload.wait_for_upload_port = no" in message
+    assert "knomi_toolchanger" in message  # the env whose section to edit
+    assert "platformio.ini" in message
+    assert exc.value.data["remedy"] == "board_upload.wait_for_upload_port = no"
+
+
+def test_an_ordinary_build_failure_keeps_the_plain_message(
+    paths, settings, display, monkeypatch
+):
+    """Only the wait-for-port signature gets the long explanation."""
+
+    def fake(cmd, **kwargs):
+        kwargs["reporter"]("stderr", "src/main.cpp:42:3: error: 'fooo' was not declared")
+        return 1
+
+    monkeypatch.setattr(displays, "run_streamed", fake)
+    monkeypatch.setattr(displays, "find_pio", lambda s: "/usr/bin/pio")
+
+    with pytest.raises(FlashError) as exc:
+        displays.upload(paths, settings, display, "/dev/knomi_t0")
+
+    assert "pio exited 1" in str(exc.value)
+    assert "wait_for_upload_port" not in str(exc.value)
 
 
 def test_resolve_port_survives_a_path_it_cannot_stat(monkeypatch):
