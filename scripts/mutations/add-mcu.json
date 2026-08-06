@@ -11,6 +11,11 @@
   ],
   "mutations": [
     {
+      "name": "the bus is snapshotted BEFORE the write",
+      "find": "        before = {d.serial for d in scan_bus(self.paths)}",
+      "replace": "        before = set()"
+    },
+    {
       "name": "katapult artifact must exist",
       "find": "        if not os.path.exists(katapult_bin):",
       "replace": "        if False:"
@@ -31,9 +36,9 @@
       "replace": "            if False:"
     },
     {
-      "name": "the bus is snapshotted BEFORE the write",
-      "find": "        known = set(reg.all_serials())\n        before = known | {d.serial for d in find_untracked(self.paths, known)}",
-      "replace": "        known = set(reg.all_serials())\n        before = set()"
+      "name": "baseline is the whole bus, not untracked-only",
+      "find": "        before = {d.serial for d in scan_bus(self.paths)}",
+      "replace": "        _k = set(reg.all_serials())\n        before = _k | {d.serial for d in scan_bus(self.paths) if d.serial not in _k}"
     }
   ]
 }

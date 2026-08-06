@@ -269,6 +269,41 @@ def test_the_new_board_is_told_apart_from_one_already_in_katapult(
     assert [c["serial"] for c in job.result["candidates"]] == ["NEWBOARD-if00"]
 
 
+def test_a_re_bootloadered_tracked_board_is_reported_as_such_not_as_nothing(
+    adder, paths, fake_root, monkeypatch
+):
+    """Found on the printer, and the reason this distinction exists.
+
+    Re-installing the bootloader on a board that is ALREADY tracked is the normal
+    case, not the exception - it sits offline in the registry precisely because it
+    had no firmware. Baselining on untracked-only meant it came back, was
+    correctly excluded as tracked, and the job said "no new device appeared",
+    sending the user to hunt for a failure when the flash had worked perfectly.
+    """
+    _stage_katapult(paths)
+    patch_dfu(monkeypatch, stdout=ONE_BOARD)
+
+    def appear(*args, **kwargs):
+        make_device(fake_root / "bus", "katapult", EBB_CHIPSET, TRACKED)
+
+    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", appear)
+
+    res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
+    assert adder.runner.wait(timeout=30)
+    job = adder.runner.get(res["job_id"])
+
+    assert job.state == "succeeded", job.error
+    # Nothing to adopt - it is already ours...
+    assert job.result["candidates"] == []
+    # ...but it definitely came back, and the result says so.
+    assert [d["serial"] for d in job.result["already_tracked"]] == [TRACKED]
+
+    lines, _, _ = job.log_since(0)
+    text = "\n".join(line.text for line in lines)
+    assert "already tracked" in text
+    assert "No board appeared" not in text, "it did appear; do not send them hunting"
+
+
 def test_no_new_board_warns_rather_than_failing_the_job(adder, paths, monkeypatch):
     """The write may well have succeeded and the board simply be slow, or on a
     marginal port. Saying what to look at beats failing a job that worked."""

@@ -1283,15 +1283,20 @@ class Api:
         else:
             target = scan["devices"][0].get("serial")
 
-        # Everything on the bus now, tracked or not, so the diff afterwards finds
-        # exactly the board this flashed - and not one someone else plugged in.
-        from ..devices import find_untracked
+        # Every serial actually on the bus right now - NOT "everything untracked".
+        #
+        # The distinction matters: a board being re-bootloadered is often already
+        # in the registry, sitting offline because it had no firmware. Baselining
+        # on untracked-only meant it came back, was correctly excluded as tracked,
+        # and the job reported "no new device appeared" - sending the user to hunt
+        # for a failure when the flash had worked perfectly.
+        from ..devices import scan as scan_bus
 
-        known = set(reg.all_serials())
-        before = known | {d.serial for d in find_untracked(self.paths, known)}
+        before = {d.serial for d in scan_bus(self.paths)}
 
         def run(ctx) -> dict[str, Any]:
-            from ..flash import adoptable_devices, flash_initial_bootloader
+            from ..devices import KATAPULT_FW_NAME, wait_for_new_device
+            from ..flash import flash_initial_bootloader
 
             ctx.step(f"Flashing Katapult onto the DFU board for {name}", 0, 2)
             flash_initial_bootloader(
@@ -1304,18 +1309,34 @@ class Api:
             )
 
             ctx.step("Waiting for the board to re-enumerate as Katapult", 1, 2)
-            candidates = adoptable_devices(
-                self.paths, before, mcu.chipset, timeout=self.ADD_MCU_REENUMERATE_TIMEOUT
+            appeared = wait_for_new_device(
+                self.paths,
+                before,
+                fw=KATAPULT_FW_NAME,
+                chipset=mcu.chipset,
+                timeout=self.ADD_MCU_REENUMERATE_TIMEOUT,
             )
-            ctx.step(f"Found {len(candidates)} new board(s)", 2, 2)
 
-            if not candidates:
+            # Split by whether the registry already knows it. Both mean the flash
+            # worked; only one leaves anything for the user to do.
+            tracked = set(self.registry().all_serials())
+            candidates = [d for d in appeared if d.serial not in tracked]
+            already = [d for d in appeared if d.serial in tracked]
+
+            ctx.step(f"Found {len(appeared)} board(s)", 2, 2)
+            for device in already:
+                ctx.reporter(
+                    "info",
+                    f"{device.serial} is back in Katapult and already tracked - "
+                    f"nothing to adopt. Flash Klipper onto it when ready.",
+                )
+            if not appeared:
                 # Not raised: the write may well have succeeded and the board may
-                # simply be slow, on a marginal port, or already tracked. Saying
-                # what to look at beats failing a job that probably worked.
+                # simply be slow or on a marginal port. Saying what to look at
+                # beats failing a job that probably worked.
                 ctx.reporter(
                     "warn",
-                    "No new Katapult device appeared. Check `ls /dev/serial/by-id/` - "
+                    "No board appeared in Katapult. Check `ls /dev/serial/by-id/` - "
                     "if it is there, adopt it directly with fw.serial.add.",
                 )
             return {
@@ -1324,6 +1345,12 @@ class Api:
                 "dfu_serial": target,
                 "candidates": [
                     {"serial": d.serial, "path": d.path, "state": d.state} for d in candidates
+                ],
+                # Appeared, but the registry already has it - the re-bootloader
+                # case. Distinct from an empty result, which means nothing came
+                # back at all.
+                "already_tracked": [
+                    {"serial": d.serial, "path": d.path, "state": d.state} for d in already
                 ],
             }
 

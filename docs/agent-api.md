@@ -464,9 +464,18 @@ what appeared:
 
 ```json
 {"type": "bttebb36", "chipset": "stm32g0b1xx", "dfu_serial": "3941335F3434",
- "candidates": [{"serial": "2D0043...-if00", "path": "/dev/serial/by-id/...",
-                 "state": "katapult"}]}
+ "candidates":      [{"serial": "2D0043...-if00", "path": "...", "state": "katapult"}],
+ "already_tracked": []}
 ```
+
+`candidates` are boards that appeared and are **not** in the registry — the ones
+to adopt. `already_tracked` are boards that appeared and already belong to a
+type, which is the normal case when re-installing a bootloader: such a board sits
+`offline` in the registry precisely because it had no firmware. Both mean the
+flash worked; only `candidates` leaves anything to do.
+
+Both empty means nothing came back at all, which is the only case worth
+investigating.
 
 **It cannot take a serial for the new board, because there isn't one yet.** A DFU
 device has no by-id name, so the identity to adopt does not exist until Katapult
