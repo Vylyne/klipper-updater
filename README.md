@@ -119,6 +119,18 @@ Two things to know:
 - **A port is never inferred.** `pio run -t upload` picks one on its own when
   told nothing, and every screen is an indistinguishable CH340 — so an upload
   that guesses writes firmware to the wrong display. Every write pins its port.
+- **A udev symlink is resolved first.** `pio device list` enumerates through
+  pyserial, which reports `/dev/ttyUSB0` and never the `/dev/knomi_t0` pointing
+  at it, so PlatformIO handed the symlink looks for a board on a port it cannot
+  see. The resolution happens at the moment of the write, with Klipper already
+  stopped, and is printed to the log — the stable name stays what the config
+  names and what the MAC record is keyed on.
+- **PlatformIO is told not to go hunting for another port.** The board manifest
+  for a native-USB ESP32-S3 asks it to reset and adopt whatever new port
+  appears; a Knomi v2 drives its LCD from those USB pins and talks over a CH340
+  that never leaves the bus, so the upload used to die waiting for a port that
+  was never coming. Adopting a rediscovered port would also defeat the pinning
+  above.
 - **A missing screen is otherwise invisible.** The klippy module runs as a no-op
   when a port won't open, so Klipper starts happily with a blank display and no
   error. `fw.display.list` is the only thing that says so.

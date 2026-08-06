@@ -132,6 +132,29 @@ def _source_dir(display: DisplayType) -> str:
     return path
 
 
+def resolve_port(port: str) -> str:
+    """Follow a udev symlink to the device PlatformIO can actually see.
+
+    `pio device list` enumerates through pyserial, which reports real devices -
+    `/dev/ttyUSB0` - and never the `/dev/knomi_t0` symlink pointing at one. Hand
+    PlatformIO the symlink and it looks for a board on a port that is not in its
+    list, which is why an upload to a perfectly healthy display failed with
+    "Couldn't find a board on the selected port".
+
+    Resolved here, at the moment of the write, rather than in the config: the
+    stable name is the whole reason the udev rule exists, and `/dev/ttyUSB0`
+    depends on plug order. Klipper is stopped by the time this runs, so nothing
+    is re-enumerating in the gap between resolving and writing.
+
+    A broken or absent symlink resolves to itself; PlatformIO then reports a
+    missing port, which is a better message than anything invented here.
+    """
+    try:
+        return os.path.realpath(port)
+    except OSError:
+        return port
+
+
 def firmware_bin(display: DisplayType) -> str:
     """Where PlatformIO leaves the image for this env."""
     return os.path.join(
@@ -207,9 +230,35 @@ def upload(
         transcript.append(line)
         reporter(stream, line)
 
+    target = resolve_port(port)
     reporter("info", f"Uploading {display.env} to {port}...")
+    if target != port:
+        # Say which real device is about to be written. The stable name is what
+        # the config and the MAC record use; this is the only place the two are
+        # visibly tied together.
+        reporter("info", f"{port} -> {target}")
+
     rc = run_streamed(
-        [pio, "run", "-e", display.env, "-t", "upload", "--upload-port", port],
+        [
+            pio,
+            "run",
+            "-e",
+            display.env,
+            "-t",
+            "upload",
+            "--upload-port",
+            target,
+            # PlatformIO's board manifest for a native-USB ESP32-S3 asks it to
+            # reset the board and then adopt whatever *new* serial port appears.
+            # Two things are wrong with that here. A Knomi v2 drives its LCD from
+            # the native USB pins and talks over a CH340, which never leaves the
+            # bus, so no new port ever appears and the upload dies waiting for
+            # one. And adopting a rediscovered port is precisely what this
+            # function refuses to do - the port is pinned so that an upload
+            # cannot land on the wrong one of several identical displays.
+            "--project-option",
+            "board_upload.wait_for_upload_port=no",
+        ],
         cwd=source,
         reporter=capture,
         cancel=cancel,

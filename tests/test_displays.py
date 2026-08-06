@@ -134,6 +134,9 @@ def test_the_upload_command_always_pins_the_port(paths, settings, display, monke
         displays, "run_streamed", lambda cmd, **kw: commands.append(cmd) or 0
     )
     monkeypatch.setattr(displays, "find_pio", lambda s: "/usr/bin/pio")
+    # Held steady so this stays about pinning: the suite runs on Windows, where
+    # realpath turns a /dev path into C:\dev. Resolution has its own tests.
+    monkeypatch.setattr(displays.os.path, "realpath", lambda p: p)
 
     displays.upload(paths, settings, display, "/dev/knomi_t0")
 
@@ -289,3 +292,96 @@ def test_an_unreadable_record_degrades_to_empty(paths):
 
     assert displays.read_macs(paths) == {}
     assert displays.record_mac(paths, "/dev/knomi_t0", "cc:ba:97:19:aa:38", "knomi") is None
+
+
+# --------------------------------------------------------------------------
+# handing PlatformIO a port it can see
+#
+# `pio device list` enumerates through pyserial, which reports /dev/ttyUSB0 and
+# never the /dev/knomi_t0 symlink pointing at it. Passing the symlink made a
+# healthy display fail with "Couldn't find a board on the selected port".
+# --------------------------------------------------------------------------
+
+
+def test_a_symlinked_port_is_resolved_before_platformio_sees_it(
+    paths, settings, display, monkeypatch, tmp_path
+):
+    commands = []
+    monkeypatch.setattr(displays, "run_streamed", lambda cmd, **kw: commands.append(cmd) or 0)
+    monkeypatch.setattr(displays, "find_pio", lambda s: "/usr/bin/pio")
+    monkeypatch.setattr(
+        displays.os.path, "realpath", lambda p: "/dev/ttyUSB0" if p == "/dev/knomi_t0" else p
+    )
+
+    result = displays.upload(paths, settings, display, "/dev/knomi_t0")
+
+    cmd = commands[0]
+    assert cmd[cmd.index("--upload-port") + 1] == "/dev/ttyUSB0"
+    # The stable name stays the identity: it is what the config names and what
+    # the MAC record is keyed on. Only PlatformIO gets the resolved device.
+    assert result["port"] == "/dev/knomi_t0"
+
+
+def test_the_resolution_is_reported_so_the_written_device_is_visible(
+    paths, settings, display, monkeypatch
+):
+    lines = []
+    monkeypatch.setattr(displays, "run_streamed", lambda cmd, **kw: 0)
+    monkeypatch.setattr(displays, "find_pio", lambda s: "/usr/bin/pio")
+    monkeypatch.setattr(
+        displays.os.path, "realpath", lambda p: "/dev/ttyUSB0" if p == "/dev/knomi_t0" else p
+    )
+
+    displays.upload(
+        paths, settings, display, "/dev/knomi_t0", reporter=lambda s, t: lines.append(t)
+    )
+
+    assert any("/dev/knomi_t0 -> /dev/ttyUSB0" in line for line in lines)
+
+
+def test_a_port_that_is_not_a_symlink_is_passed_through_unchanged(
+    paths, settings, display, monkeypatch
+):
+    commands = []
+    monkeypatch.setattr(displays, "run_streamed", lambda cmd, **kw: commands.append(cmd) or 0)
+    monkeypatch.setattr(displays, "find_pio", lambda s: "/usr/bin/pio")
+    monkeypatch.setattr(displays.os.path, "realpath", lambda p: p)
+
+    lines = []
+    displays.upload(
+        paths, settings, display, "/dev/ttyUSB1", reporter=lambda s, t: lines.append(t)
+    )
+
+    cmd = commands[0]
+    assert cmd[cmd.index("--upload-port") + 1] == "/dev/ttyUSB1"
+    # Nothing to say when there was no indirection to report.
+    assert not any("->" in line for line in lines)
+
+
+def test_platformio_is_told_not_to_go_looking_for_another_port(
+    paths, settings, display, monkeypatch
+):
+    """The board manifest asks it to reset and adopt whatever new port appears.
+
+    A Knomi v2 talks over a CH340 that never leaves the bus, so no new port ever
+    appears and the upload dies waiting. Adopting a rediscovered port is also
+    exactly what this function exists to prevent.
+    """
+    commands = []
+    monkeypatch.setattr(displays, "run_streamed", lambda cmd, **kw: commands.append(cmd) or 0)
+    monkeypatch.setattr(displays, "find_pio", lambda s: "/usr/bin/pio")
+
+    displays.upload(paths, settings, display, "/dev/ttyUSB0")
+
+    cmd = commands[0]
+    assert "board_upload.wait_for_upload_port=no" in cmd
+    assert cmd[cmd.index("board_upload.wait_for_upload_port=no") - 1] == "--project-option"
+
+
+def test_resolve_port_survives_a_path_it_cannot_stat(monkeypatch):
+    def boom(p):
+        raise OSError("nope")
+
+    monkeypatch.setattr(displays.os.path, "realpath", boom)
+    # PlatformIO's own "missing port" message beats anything invented here.
+    assert displays.resolve_port("/dev/knomi_t9") == "/dev/knomi_t9"

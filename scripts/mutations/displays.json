@@ -17,8 +17,8 @@
     },
     {
       "name": "the upload command pins the port",
-      "find": "\"-t\", \"upload\", \"--upload-port\", port]",
-      "replace": "\"-t\", \"upload\"]"
+      "find": "            \"--upload-port\",\n            target,\n",
+      "replace": ""
     },
     {
       "name": "a non-zero exit is a failure, not a success",
@@ -29,6 +29,21 @@
       "name": "a blank MAC never overwrites a good record",
       "find": "    if not mac:\n        return None",
       "replace": "    if False:\n        return None"
+    },
+    {
+      "name": "a udev symlink is resolved to the device pio can see",
+      "find": "    target = resolve_port(port)",
+      "replace": "    target = port"
+    },
+    {
+      "name": "platformio is told not to adopt a rediscovered port",
+      "find": "            \"--project-option\",\n            \"board_upload.wait_for_upload_port=no\",\n",
+      "replace": ""
+    },
+    {
+      "name": "the stable name stays the reported identity, not the resolved one",
+      "find": "        \"port\": port,\n        \"mac\":",
+      "replace": "        \"port\": target,\n        \"mac\":"
     }
   ]
 }
