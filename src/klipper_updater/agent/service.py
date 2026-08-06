@@ -82,6 +82,10 @@ class Agent:
             self.emitter,
             serialize=lambda devices: self.api.bus(self.api.registry()),
             logger=self.log,
+            # A board that took longer to enumerate than add_mcu's wait turns up
+            # here instead. Adopting it on the same tick means the bus event the
+            # panel receives already shows it under its type.
+            on_change=self.api.adopt_paired,
         )
 
     # -- outbound calls used by the Api for enrichment ---------------------

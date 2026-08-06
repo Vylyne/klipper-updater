@@ -513,6 +513,28 @@ Finding no new board **warns rather than failing the job**: the write may have
 succeeded and the board simply be slow or on a marginal port, so the log says to
 check `/dev/serial/by-id` and adopt directly.
 
+#### A board that turns up later is still adopted
+
+The wait is 15 seconds, which a board on a chain of hubs can miss - and one
+unplugged after flashing and brought back tomorrow will certainly miss. So the
+DFU serial is paired with the chosen type in `.dfu-pairings.json`, written
+**after the write and before the wait**, since the wait timing out is exactly the
+case it covers.
+
+The agent's bus poll then adopts such a board when it appears. That is the
+completion of an operation already asked for - the type was chosen and the button
+pressed - rather than a new decision. Five conditions keep it from ever being a
+surprise:
+
+- only **untracked Katapult** devices; anything already in the registry is left alone
+- only an **unambiguous** DFU-serial match, since the derivation sums two id words
+- only within the **TTL** (24h), so a board found in a drawer next month is the stranger it has become
+- only if the **type still exists**
+- the pairing is **consumed**, so it cannot re-add a board you deliberately untracked
+
+Each adoption is logged and emits a `state` event, because a registry edit nobody
+can see happening is the thing to avoid.
+
 Only STM32 is supported. RP2040 needs BOOTSEL mass storage and a `.uf2`, which is
 a different mechanism; `unsupported_chipset` says so rather than failing later
 with something about dfu-util.

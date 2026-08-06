@@ -37,6 +37,7 @@ from ..errors import (
     ToolMissingError,
     UpdaterError,
 )
+from ..pairings import PAIRING_TTL as _PAIRING_TTL
 from ..paths import FW_TARGETS, REENUMERATE_TIMEOUT, Paths
 from ..settings import Settings, load_settings, save_settings
 from .rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, MethodNotFound, RpcError
@@ -1112,6 +1113,85 @@ class Api:
     DFU_NONE = "none"
     DFU_AMBIGUOUS = "ambiguous"
 
+    #: How long a bootloader-install pairing stays actionable. A class attribute
+    #: so tests can shrink it without patching a call site, matching
+    #: ADD_MCU_REENUMERATE_TIMEOUT and the klippy timeouts.
+    PAIRING_TTL = _PAIRING_TTL
+
+    def adopt_paired(self) -> list[dict[str, str]]:
+        """Track boards that arrived late from a bootloader install we did.
+
+        The completion of an operation the user already asked for, not a new
+        decision: they chose the type and pressed the button, the write happened,
+        and this is the board turning up afterwards. Doing nothing would mean the
+        stated intent is lost to a 15-second timeout.
+
+        Every condition below exists to keep it from ever being a *surprise*:
+
+        * only Katapult devices that are **untracked** - anything already in the
+          registry is left exactly as it is;
+        * only an **unambiguous** match, for the same reason `_identify_dfu`
+          refuses to name a colliding board: the DFU serial is derived by a sum
+          and two boards could in principle share one;
+        * only a pairing **within its TTL**, so a board found in a drawer next
+          month is the stranger it has become;
+        * only if the type still **exists**, since it can have been removed;
+        * and the pairing is **consumed**, so it can never act twice.
+
+        Returns what it adopted, for the log - a registry edit nobody can see
+        happening is the thing to avoid.
+        """
+        from ..devices import KATAPULT_FW_NAME, dfu_serial_for, find_untracked
+        from ..pairings import Pairings
+
+        pairings = Pairings(self.paths, ttl=self.PAIRING_TTL)
+        if not pairings.all():
+            return []
+
+        reg = self.registry()
+        untracked = find_untracked(self.paths, reg.all_serials(), fw=KATAPULT_FW_NAME)
+        if not untracked:
+            pairings.prune()
+            return []
+
+        # Which known DFU serials map to more than one board on the bus. Cheap,
+        # and it is the only way a wrong adoption could happen.
+        seen: dict[str, int] = {}
+        for device in untracked:
+            key = dfu_serial_for(device.serial)
+            if key:
+                seen[key] = seen.get(key, 0) + 1
+
+        adopted: list[dict[str, str]] = []
+        for device in untracked:
+            key = dfu_serial_for(device.serial)
+            if not key or seen.get(key, 0) != 1:
+                continue
+            mcu_type = pairings.type_for(key)
+            if not mcu_type or mcu_type not in reg.names():
+                continue
+            try:
+                with Registry.mutate(self.paths, f"adopt {device.serial} as {mcu_type}") as live:
+                    if not live.add_serial(mcu_type, device.serial):
+                        continue
+            except UpdaterError as exc:
+                if self._log is not None:
+                    self._log.warning(f"could not adopt {device.serial} as {mcu_type}: {exc}")
+                continue
+
+            pairings.forget(key)
+            adopted.append({"type": mcu_type, "serial": device.serial, "dfu_serial": key})
+            if self._log is not None:
+                self._log.info(
+                    f"adopted {device.serial} as {mcu_type} - it is the board whose "
+                    f"bootloader was installed as {mcu_type} (DFU serial {key})"
+                )
+
+        pairings.prune()
+        if adopted:
+            self._changed()
+        return adopted
+
     def _identify_dfu(self, devices: list) -> None:
         """Name the boards in DFU that we already know about.
 
@@ -1341,6 +1421,15 @@ class Api:
                 reporter=ctx.reporter,
                 target_serial=target,
             )
+
+            # Recorded here - after the write, BEFORE the wait - because the wait
+            # timing out is precisely the case this covers. A board on a marginal
+            # port, or unplugged and brought back tomorrow, then still arrives
+            # with its intent attached rather than as an anonymous stranger.
+            if target:
+                from ..pairings import Pairings
+
+                Pairings(self.paths).record(target, name)
 
             ctx.step("Waiting for the board to re-enumerate as Katapult", 1, 2)
             appeared = wait_for_new_device(

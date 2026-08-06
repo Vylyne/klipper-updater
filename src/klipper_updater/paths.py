@@ -133,6 +133,19 @@ class Paths:
         return os.path.join(self.data_dir, ".flashed.json")
 
     @property
+    def pairings_file(self) -> str:
+        """Which type each freshly-bootloadered board was meant to become.
+
+        A board in DFU has no identity to record, so this is keyed on its *DFU*
+        serial - which is derivable from the running serial it will have once
+        Katapult is on it, and is therefore the one thing that survives the
+        transition. Written before the re-enumeration wait, so a board that takes
+        longer than the wait, or is unplugged and brought back tomorrow, still
+        arrives with its intent attached instead of as an anonymous stranger.
+        """
+        return os.path.join(self.data_dir, ".dfu-pairings.json")
+
+    @property
     def journal_file(self) -> str:
         """Records "klipper was stopped by us" so a crashed run can be reconciled."""
         return os.path.join(self.data_dir, ".updater.state")

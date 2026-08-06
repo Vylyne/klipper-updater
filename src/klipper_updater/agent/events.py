@@ -169,10 +169,16 @@ class BusWatcher:
         idle_interval: float = 15.0,
         busy_interval: float = 2.0,
         logger: Any = None,
+        on_change: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.paths = paths
         self.emitter = emitter
         self._serialize = serialize
+        #: Run when the set of devices changes, before the event goes out. Used
+        #: to adopt a board that has finally turned up from a bootloader install,
+        #: so the `bus` event already reflects it rather than showing it as
+        #: untracked for one poll and tracked the next.
+        self._on_change = on_change
         self.idle_interval = idle_interval
         self.busy_interval = busy_interval
         self._log = logger
@@ -227,6 +233,12 @@ class BusWatcher:
                 fp = _fingerprint(found)
                 if fp != self._last:
                     self._last = fp
+                    if self._on_change is not None:
+                        try:
+                            self._on_change()
+                        except Exception as exc:  # noqa: BLE001 - never kill the watcher
+                            if self._log is not None:
+                                self._log.warning(f"bus change handler failed: {exc}")
                     self.emitter.emit("bus", {"devices": self._serialize(found)})
             except Exception as exc:  # noqa: BLE001 - a watcher must not die
                 if self._log is not None:

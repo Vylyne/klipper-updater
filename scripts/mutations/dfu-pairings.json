@@ -1,0 +1,44 @@
+{
+  "_comment": "Guards on adopting a late board. This edits the registry unasked, so each one is about never adopting the WRONG thing.",
+  "file": "src/klipper_updater/agent/methods.py",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "tests/test_pairings.py",
+    "tests/test_agent_add_mcu.py",
+    "-q"
+  ],
+  "mutations": [
+    {
+      "name": "only untracked boards are adopted",
+      "find": "        untracked = find_untracked(self.paths, reg.all_serials(), fw=KATAPULT_FW_NAME)",
+      "replace": "        untracked = find_untracked(self.paths, set(), fw=KATAPULT_FW_NAME)"
+    },
+    {
+      "name": "only Katapult devices are adopted",
+      "find": "fw=KATAPULT_FW_NAME)\n        if not untracked:",
+      "replace": ")\n        if not untracked:"
+    },
+    {
+      "name": "an ambiguous DFU serial adopts nothing",
+      "find": "            if not key or seen.get(key, 0) != 1:",
+      "replace": "            if not key:"
+    },
+    {
+      "name": "the type must still exist",
+      "find": "            if not mcu_type or mcu_type not in reg.names():",
+      "replace": "            if not mcu_type:"
+    },
+    {
+      "name": "the pairing is consumed so it cannot act twice",
+      "find": "            pairings.forget(key)\n",
+      "replace": ""
+    },
+    {
+      "name": "the pairing is recorded BEFORE the re-enumeration wait",
+      "find": "            if target:\n                from ..pairings import Pairings\n\n                Pairings(self.paths).record(target, name)\n",
+      "replace": ""
+    }
+  ]
+}
