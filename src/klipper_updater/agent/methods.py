@@ -1043,7 +1043,7 @@ class Api:
         "fw.type.list": "type_list",
         "fw.bus.scan": "bus_scan",
         "fw.dfu.scan": "dfu_scan",
-        "fw.knomi.list": "knomi_list",
+        "fw.display.list": "display_list",
         "fw.artifacts": "artifacts",
         "fw.settings.get": "settings_get",
         "fw.settings.set": "settings_set",
@@ -1119,9 +1119,9 @@ class Api:
     #: ADD_MCU_REENUMERATE_TIMEOUT and the klippy timeouts.
     PAIRING_TTL = _PAIRING_TTL
 
-    # -- Knomi displays -----------------------------------------------------
+    # -- ESP32 displays -----------------------------------------------------
 
-    def knomi_list(self, args: dict) -> dict[str, Any]:
+    def display_list(self, args: dict) -> dict[str, Any]:
         """The displays Klipper is configured for, and whether they are there.
 
         **The device list comes from Klipper, not from our registry.** A

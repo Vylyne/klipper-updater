@@ -1,4 +1,8 @@
-"""Knomi displays: finding out what Klipper is configured for, and if it is there.
+"""ESP32 displays: what Klipper is configured for, and whether it is there.
+
+Named for the class rather than for Knomi, because a second, differently shaped
+ESP32-S3 display is coming and would be a second PlatformIO env in the same tree
+- so the knomi-specific name would have been wrong within weeks.
 
 Read-only, and first, for the same reason `fw.dfu.scan` came before
 `fw.add_mcu.start`: it establishes what is actually true on the host before
@@ -59,7 +63,7 @@ def test_the_displays_come_from_klippers_config(api, fake_root):
             "printer": {"kinematics": "corexy"},
         }
     )
-    res = api.dispatch("fw.knomi.list")
+    res = api.dispatch("fw.display.list")
 
     assert res["reachable"] is True
     assert [d["name"] for d in res["displays"]] == ["t0_knomi"]
@@ -77,7 +81,7 @@ def test_other_sections_are_ignored(api):
             "printer": {},
         }
     )
-    assert api.dispatch("fw.knomi.list")["displays"] == []
+    assert api.dispatch("fw.display.list")["displays"] == []
 
 
 def test_a_missing_symlink_is_reported_not_hidden(api, fake_root):
@@ -87,7 +91,7 @@ def test_a_missing_symlink_is_reported_not_hidden(api, fake_root):
     api._call = _moonraker(
         {"knomi_serial t0_knomi": {"serial": str(fake_root / "knomi_t0_gone")}}
     )
-    display = api.dispatch("fw.knomi.list")["displays"][0]
+    display = api.dispatch("fw.display.list")["displays"][0]
 
     assert display["present"] is False
     assert display["resolved_path"] is None
@@ -107,7 +111,7 @@ def test_a_symlink_is_resolved_to_the_real_device(api, fake_root):
         pytest.skip("symlinks need privileges on this platform")
 
     api._call = _moonraker({"knomi_serial t0_knomi": {"serial": str(link)}})
-    display = api.dispatch("fw.knomi.list")["displays"][0]
+    display = api.dispatch("fw.display.list")["displays"][0]
 
     assert display["present"] is True
     assert display["resolved_path"].endswith("ttyUSB0")
@@ -124,7 +128,7 @@ def test_several_displays_come_back_in_a_stable_order(api, fake_root):
         sections[f"knomi_serial {name}"] = {"serial": str(port)}
 
     api._call = _moonraker(sections)
-    names = [d["name"] for d in api.dispatch("fw.knomi.list")["displays"]]
+    names = [d["name"] for d in api.dispatch("fw.display.list")["displays"]]
     assert names == ["t0_knomi", "t1_knomi", "t2_knomi"]
 
 
@@ -132,14 +136,14 @@ def test_a_section_with_no_serial_is_skipped(api):
     """`serial:` is required by the module, but a half-edited config should not
     produce an entry pointing at nothing."""
     api._call = _moonraker({"knomi_serial t0_knomi": {"heater_hotend": "extruder"}})
-    assert api.dispatch("fw.knomi.list")["displays"] == []
+    assert api.dispatch("fw.display.list")["displays"] == []
 
 
 def test_an_unreachable_klipper_says_so_rather_than_claiming_none(api):
     """"No displays configured" and "we could not ask" must not look the same -
     that conflation is what made a board 90 commits behind report up to date."""
     api._call = _moonraker({}, reachable=False)
-    res = api.dispatch("fw.knomi.list")
+    res = api.dispatch("fw.display.list")
 
     assert res["reachable"] is False
     assert res["displays"] == []
@@ -150,7 +154,7 @@ def test_it_works_with_no_moonraker_at_all(paths, live_registry_text):
     raising."""
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
-    res = Api(paths).dispatch("fw.knomi.list")
+    res = Api(paths).dispatch("fw.display.list")
 
     assert res["reachable"] is False
     assert res["displays"] == []
@@ -158,4 +162,4 @@ def test_it_works_with_no_moonraker_at_all(paths, live_registry_text):
 
 def test_it_is_available_to_a_read_only_agent(api):
     """It reads config and stats paths. Nothing here writes."""
-    assert "fw.knomi.list" in api.dispatch("fw.ping")["capabilities"]
+    assert "fw.display.list" in api.dispatch("fw.ping")["capabilities"]
