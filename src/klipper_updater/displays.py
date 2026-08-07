@@ -143,6 +143,123 @@ def _source_dir(display: DisplayType) -> str:
     return path
 
 
+# --------------------------------------------------------------------------
+# is the screen running the current source tree
+# --------------------------------------------------------------------------
+
+#: The git short sha inside a reported firmware version. knomi-serial's
+#: `scripts/version.py` appends semver build metadata to the VERSION file:
+#:
+#:     0.4.0                    clean tree sitting exactly on tag v0.4.0
+#:     0.4.0+3.gd34db33         three commits past the tag
+#:     0.4.0+3.gd34db33.dirty   ...with uncommitted changes
+#:     0.4.0+gd34db33           the tag does not exist yet
+#:
+#: Only the sha is read back out, deliberately. Reimplementing that whole string
+#: here would be a second copy of somebody else's rule, and it would drift the
+#: first time they changed it - whereas a commit id either matches HEAD or does
+#: not, and that question survives any change to how the string is assembled.
+_FW_SHA_RE = re.compile(r"\+(?:\d+\.)?g([0-9a-f]{6,40})", re.IGNORECASE)
+
+#: A build from a tree with uncommitted changes. Never reproducible, so it can
+#: never be *shown* to match - saying "up to date" about one would be a lie.
+_FW_DIRTY_RE = re.compile(r"\.dirty\b", re.IGNORECASE)
+
+#: How stale a screen's firmware is relative to the source tree.
+FW_CURRENT = "current"
+FW_BEHIND = "behind"
+FW_DIRTY = "dirty"
+FW_UNKNOWN = "unknown"
+
+
+@dataclasses.dataclass(frozen=True)
+class SourceState:
+    """What the display source tree would build right now."""
+
+    head: Optional[str] = None
+    version: Optional[str] = None
+    dirty: bool = False
+    #: HEAD is exactly the `v<VERSION>` tag, which is the one case the firmware
+    #: reports a bare version with no sha to compare against.
+    on_tag: bool = False
+
+
+def _git(directory: str, *args: str) -> Optional[str]:
+    import subprocess
+
+    try:
+        out = subprocess.check_output(
+            ("git",) + args, cwd=directory, stderr=subprocess.DEVNULL, timeout=10
+        )
+    except Exception:  # noqa: BLE001 - not a git checkout, no git, or a timeout
+        return None
+    return out.decode("utf-8", "replace").strip()
+
+
+def source_state(source: str) -> SourceState:
+    """Read the display source tree's identity. Everything optional."""
+    path = os.path.expanduser(source or "")
+    if not path or not os.path.isdir(path):
+        return SourceState()
+
+    head = _git(path, "rev-parse", "--short", "HEAD") or None
+    if head is None:
+        return SourceState()
+
+    version = None
+    try:
+        with open(os.path.join(path, "VERSION"), encoding="utf-8") as fh:
+            version = fh.read().strip() or None
+    except OSError:
+        version = None
+
+    dirty = bool(_git(path, "status", "--porcelain"))
+    on_tag = False
+    if version:
+        behind = _git(path, "rev-list", "--count", f"v{version}..HEAD")
+        on_tag = behind == "0"
+
+    return SourceState(head=head, version=version, dirty=dirty, on_tag=on_tag)
+
+
+def firmware_state(running: Optional[str], state: SourceState) -> str:
+    """Compare what a screen reports running against what the tree would build.
+
+    Stronger than the staleness check on the MCU side, which compares a built
+    artifact against its source. This compares what is *actually on the device*,
+    so a screen flashed by hand months ago cannot report itself up to date.
+
+    `unknown` is returned generously. Every input here is optional - no git
+    checkout, no VERSION file, a module too old to report a version - and a
+    wrong `behind` sends someone to reflash a healthy display during a print.
+    """
+    if not running or state.head is None:
+        return FW_UNKNOWN
+
+    if _FW_DIRTY_RE.search(running):
+        # Built from uncommitted changes. The sha may well match HEAD, but the
+        # working tree it was built from is not recoverable, so "current" is
+        # unprovable rather than merely unknown.
+        return FW_DIRTY
+
+    match = _FW_SHA_RE.search(running)
+    if match:
+        # Short shas can differ in length between builds; compare on the shorter.
+        built, head = match.group(1).lower(), state.head.lower()
+        size = min(len(built), len(head))
+        return FW_CURRENT if built[:size] == head[:size] else FW_BEHIND
+
+    # No sha at all means a clean build sitting exactly on the version tag. It
+    # is current only if the tree is still there - same version, still on the
+    # tag, still clean.
+    if state.version and running.strip() == state.version and state.on_tag and not state.dirty:
+        return FW_CURRENT
+    if state.version and state.on_tag and not state.dirty:
+        # A release build of a different version than the tree holds.
+        return FW_BEHIND
+    return FW_BEHIND if state.version else FW_UNKNOWN
+
+
 def resolve_port(port: str) -> str:
     """Follow a udev symlink to the device PlatformIO can actually see.
 

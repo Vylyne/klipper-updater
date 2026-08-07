@@ -438,3 +438,87 @@ def test_resolve_port_survives_a_path_it_cannot_stat(monkeypatch):
     monkeypatch.setattr(displays.os.path, "realpath", boom)
     # PlatformIO's own "missing port" message beats anything invented here.
     assert displays.resolve_port("/dev/knomi_t9") == "/dev/knomi_t9"
+
+
+# --------------------------------------------------------------------------
+# is the screen running the current source tree
+#
+# knomi-serial bakes the git short sha into the version the firmware reports,
+# so the device itself says which commit it was built from. That is a stronger
+# check than the MCU side gets: staleness there compares a built artifact
+# against its source, which says nothing about what is on the board.
+# --------------------------------------------------------------------------
+
+from klipper_updater.displays import (  # noqa: E402
+    FW_BEHIND,
+    FW_CURRENT,
+    FW_DIRTY,
+    FW_UNKNOWN,
+    SourceState,
+    firmware_state,
+)
+
+TREE = SourceState(head="d34db33", version="0.4.0", dirty=False, on_tag=False)
+
+
+def test_the_sha_in_the_reported_version_is_what_matches():
+    assert firmware_state("0.4.0+3.gd34db33", TREE) == FW_CURRENT
+
+
+def test_an_older_commit_is_behind():
+    assert firmware_state("0.4.0+1.gbadc0de", TREE) == FW_BEHIND
+
+
+def test_a_tagless_build_still_carries_its_sha():
+    """`0.4.0+gd34db33` - the tag does not exist yet, but the commit does."""
+    assert firmware_state("0.4.0+gd34db33", TREE) == FW_CURRENT
+
+
+def test_short_shas_of_different_lengths_still_compare():
+    """git picks the length; it grows as a repo does, and a firmware built
+    months ago can carry a shorter one than HEAD reports today."""
+    assert firmware_state("0.4.0+2.gd34db3", TREE) == FW_CURRENT
+    assert firmware_state("0.4.0+2.gd34db3399", TREE) == FW_CURRENT
+
+
+def test_a_dirty_build_is_never_called_current():
+    """The tree it came from is not recoverable, so 'up to date' is unprovable -
+    not merely unknown. Saying it matches would be a lie even when the sha does."""
+    assert firmware_state("0.4.0+3.gd34db33.dirty", TREE) == FW_DIRTY
+
+
+def test_a_release_build_matches_a_tree_still_sitting_on_that_tag():
+    """A clean tagged build reports a bare version with no sha to compare."""
+    tree = SourceState(head="d34db33", version="0.4.0", dirty=False, on_tag=True)
+    assert firmware_state("0.4.0", tree) == FW_CURRENT
+
+
+def test_a_release_build_of_a_different_version_is_behind():
+    tree = SourceState(head="d34db33", version="0.5.0", dirty=False, on_tag=True)
+    assert firmware_state("0.4.0", tree) == FW_BEHIND
+
+
+def test_a_release_build_against_a_moved_tree_is_behind():
+    """Bare version, but the tree has commits past the tag - so whatever is on
+    the screen predates them."""
+    tree = SourceState(head="d34db33", version="0.4.0", dirty=False, on_tag=False)
+    assert firmware_state("0.4.0", tree) == FW_BEHIND
+
+
+def test_no_git_checkout_is_unknown_not_behind():
+    """A wrong 'behind' sends someone to reflash a healthy display."""
+    assert firmware_state("0.4.0+3.gd34db33", SourceState()) == FW_UNKNOWN
+
+
+def test_a_screen_that_reports_no_version_is_unknown():
+    """A knomi_serial older than get_status reports nothing at all."""
+    assert firmware_state(None, TREE) == FW_UNKNOWN
+    assert firmware_state("", TREE) == FW_UNKNOWN
+
+
+def test_source_state_survives_a_directory_that_is_not_a_checkout(tmp_path):
+    from klipper_updater.displays import source_state
+
+    assert source_state(str(tmp_path)).head is None
+    assert source_state(str(tmp_path / "nope")).head is None
+    assert source_state("").head is None

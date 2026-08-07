@@ -344,6 +344,9 @@ class Api:
         out = []
         for _name, display in sorted(types.items()):
             prefix = display.klipper_section
+            # Once per type, not once per screen: they share a source tree, and
+            # it costs three git calls.
+            tree = displays_mod.source_state(display.source)
             screens = []
             for entry in listed["displays"]:
                 if not entry["section"].startswith(prefix + " "):
@@ -363,6 +366,13 @@ class Api:
                         # two displays swapping sockets.
                         "moved_from": known.get("moved_from"),
                         "moved_at": known.get("moved_at"),
+                        # current | behind | dirty | unknown. Compares the sha
+                        # baked into what the screen reports running against the
+                        # source tree's HEAD - so unlike the MCU artifact check,
+                        # this is about the device rather than a built file.
+                        "firmware_state": displays_mod.firmware_state(
+                            entry.get("firmware_version"), tree
+                        ),
                     }
                 )
             out.append(
@@ -382,9 +392,20 @@ class Api:
                         (s["module_version"] for s in screens if s.get("module_version")),
                         None,
                     ),
-                    # Any screen whose firmware speaks a protocol the module does
-                    # not. The one thing here that genuinely means "reflash".
-                    "needs_flash": any(s.get("protocol_match") is False for s in screens),
+                    # Two independent reasons to reflash, and either is enough.
+                    # A protocol mismatch is the device saying it cannot talk to
+                    # this module; `behind` is it running an older commit than
+                    # the tree. Neither is inferred from the other - a screen can
+                    # be several commits old and still speak the protocol fine.
+                    "needs_flash": any(
+                        s.get("protocol_match") is False
+                        or s.get("firmware_state") == displays_mod.FW_BEHIND
+                        for s in screens
+                    ),
+                    # What the tree would build right now, for the panel to show
+                    # beside what the screens report.
+                    "source_version": tree.head,
+                    "source_dirty": tree.dirty,
                 }
             )
         return out
