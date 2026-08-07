@@ -420,3 +420,50 @@ def test_the_object_list_is_fetched_once_for_mcus_and_displays(api, fake_root):
     api.display_list({})
 
     assert calls.count("printer.objects.list") == 1
+
+
+def test_the_tool_the_screen_belongs_to_reaches_the_caller(api, fake_root):
+    """knomi_serial grew per-tool fields. They come from the host's cluster, not
+    from the device, so they answer even while a screen is silent - and they are
+    the only thing tying a screen to a toolhead without reading printer.cfg."""
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    api._call = _moonraker_live(
+        _configured(port),
+        {
+            "knomi_serial T0_knomi": {
+                "tool": 0,
+                "used": True,
+                "filament_color": "FF8800",
+                "filament_type": "PLA",
+            }
+        },
+    )
+    screen = api.display_list({})["displays"][0]
+
+    assert screen["tool"] == 0
+    assert screen["used"] is True
+    assert screen["filament_color"] == "FF8800"
+    assert screen["filament_type"] == "PLA"
+
+
+def test_tool_zero_is_not_confused_with_no_tool(api, fake_root):
+    """T0 is a real tool and a falsy int. Anything treating it as absent drops
+    the first toolhead, which is the one most likely to exist."""
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    api._call = _moonraker_live(_configured(port), {"knomi_serial T0_knomi": {"tool": 0}})
+    assert api.display_list({})["displays"][0]["tool"] == 0
+
+
+def test_a_module_without_the_tool_fields_reports_them_as_unknown(api, fake_root):
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    api._call = _moonraker_live(_configured(port), {"knomi_serial T0_knomi": {}})
+    screen = api.display_list({})["displays"][0]
+
+    for field in ("tool", "used", "filament_color", "filament_type"):
+        assert screen[field] is None, field

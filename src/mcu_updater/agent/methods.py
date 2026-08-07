@@ -1325,6 +1325,13 @@ class Api:
                     # reflashing" a display can produce, because the device
                     # itself declares it.
                     "protocol_match": live.get("protocol_match"),
+                    # What the host believes about the tool this screen belongs
+                    # to. Not device state - the module fills these from the
+                    # cluster, so they answer even while the screen is silent.
+                    "tool": live.get("tool"),
+                    "used": live.get("used"),
+                    "filament_color": live.get("filament_color"),
+                    "filament_type": live.get("filament_type"),
                     "build_variant": live.get("build_variant"),
                     "sleep_state": live.get("sleep_state"),
                     "screen": live.get("screen"),

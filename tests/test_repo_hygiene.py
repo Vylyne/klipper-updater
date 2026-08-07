@@ -78,3 +78,47 @@ def test_the_check_can_actually_see_the_repo():
         pytest.skip("not a git checkout, or git unavailable")
     assert len(modes) > 20
     assert any(path.endswith(".py") for path in modes)
+
+
+def test_no_mutation_is_left_live_in_the_source():
+    """The suite must fail if a sabotaged guard is sitting on disk.
+
+    scripts/mutation_test.py edits files in place and restores in a `finally`,
+    verifying by hash. That still loses if the process is *killed* - a shell
+    timeout SIGTERMs it, the finally never completes, and the mutation stays.
+
+    It happened: a loop over every spec hit a two-minute timeout, and the
+    inline-comment strip in cfgdoc.py was committed and pushed missing. The
+    config parser then kept `# comments` as part of the value, so
+    `display_source: ~/knomi_serial  # shared` became a directory name with a
+    comment in it and every display build failed on a folder that was right
+    there.
+
+    The suite is the thing that runs before every commit, so the check belongs
+    here rather than in the harness that cannot be trusted to finish.
+    """
+    import glob
+    import json
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    live = []
+    for spec_path in sorted(glob.glob(str(root / "scripts" / "mutations" / "*.json"))):
+        with open(spec_path, encoding="utf-8") as fh:
+            spec = json.load(fh)
+        target = root / spec["file"]
+        if not target.exists():
+            continue
+        source = target.read_text(encoding="utf-8")
+        for mutation in spec["mutations"]:
+            if mutation["find"] in source:
+                continue
+            name = mutation["name"]
+            if mutation["replace"] and mutation["replace"] in source:
+                live.append(f"{spec['file']}: MUTATION STILL APPLIED - {name}")
+            else:
+                # Not sabotage, but the spec no longer describes the code and
+                # would report STALE rather than guarding anything.
+                live.append(f"{spec['file']}: anchor no longer matches - {name}")
+
+    assert not live, "mutation specs out of sync with the source:\n  " + "\n  ".join(live)
