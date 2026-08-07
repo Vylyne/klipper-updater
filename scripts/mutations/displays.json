@@ -1,6 +1,6 @@
 {
   "_comment": "Display upload guards. Firmware written to the wrong screen is the failure these prevent.",
-  "file": "src/klipper_updater/displays.py",
+  "file": "src/mcu_updater/displays.py",
   "command": [
     "python",
     "-m",

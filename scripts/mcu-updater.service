@@ -14,7 +14,7 @@
 # this to klipper-anything.
 
 [Unit]
-Description=Klipper Updater Moonraker Agent
+Description=MCU Updater Moonraker Agent
 Documentation=https://github.com/Vylyne/mcu-updater
 # Wants, not Requires: a Moonraker restart must not take the agent down. It has
 # its own reconnect loop, and in later phases a build or flash may be in flight.
@@ -28,7 +28,7 @@ Group=%USER%
 WorkingDirectory=%INSTALL_DIR%
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%INSTALL_DIR%/src
-ExecStart=%PYTHON% -m klipper_updater.agent \
+ExecStart=%PYTHON% -m mcu_updater.agent \
     --socket %PRINTER_DATA%/comms/moonraker.sock \
     --log %PRINTER_DATA%/logs/mcu-updater.log \
     --shutdown-grace 280

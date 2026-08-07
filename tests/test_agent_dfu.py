@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from klipper_updater.agent.methods import Api
-from klipper_updater.flash import dfu_devices, list_dfu_devices
+from mcu_updater.agent.methods import Api
+from mcu_updater.flash import dfu_devices, list_dfu_devices
 
 # One real board, as dfu-util actually prints it: three altsettings sharing a
 # devnum, path and serial. Counting lines here is what once refused every
@@ -51,7 +51,7 @@ class FakeRun:
 
 
 def patch_dfu(monkeypatch, **kwargs):
-    monkeypatch.setattr("klipper_updater.flash.subprocess.run", FakeRun(**kwargs))
+    monkeypatch.setattr("mcu_updater.flash.subprocess.run", FakeRun(**kwargs))
 
 
 @pytest.fixture
@@ -236,7 +236,7 @@ def test_two_known_boards_mapping_to_one_dfu_serial_name_neither(
     An unlabelled board is a small annoyance; a board labelled as the wrong one is
     how you flash the toolhead you meant to leave alone.
     """
-    from klipper_updater.devices import dfu_serial_for
+    from mcu_updater.devices import dfu_serial_for
 
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
@@ -276,7 +276,7 @@ def test_a_lone_board_is_still_pinned_by_serial(monkeypatch):
     """Not belt-and-braces: between the scan and the write, someone can jumper a
     second board and plug it in. Targeting the VID:PID alone would then take
     whichever answered first."""
-    from klipper_updater.flash import dfu_selector
+    from mcu_updater.flash import dfu_selector
 
     patch_dfu(monkeypatch, stdout=ONE_BOARD)
     assert dfu_selector(dfu_devices()[0]) == ["-S", "3941335F3434"]
@@ -285,7 +285,7 @@ def test_a_lone_board_is_still_pinned_by_serial(monkeypatch):
 def test_the_selector_degrades_by_how_well_each_field_survives():
     """Serial comes from the die's unique id and survives a replug; a bus path
     holds only while the board stays in one port; devnum changes every time."""
-    from klipper_updater.flash import dfu_selector
+    from mcu_updater.flash import dfu_selector
 
     assert dfu_selector({"serial": "ABC", "path": "6-1", "devnum": "9"}) == ["-S", "ABC"]
     assert dfu_selector({"serial": None, "path": "6-1", "devnum": "9"}) == ["-p", "6-1"]
@@ -301,8 +301,8 @@ def _staged_bin(paths) -> str:
 
 
 def test_two_boards_with_no_choice_made_is_refused(paths, monkeypatch, settings):
-    from klipper_updater.errors import AmbiguousDfuError
-    from klipper_updater.flash import flash_dfu_stm32
+    from mcu_updater.errors import AmbiguousDfuError
+    from mcu_updater.flash import flash_dfu_stm32
 
     patch_dfu(monkeypatch, stdout=TWO_BOARDS)
     with pytest.raises(AmbiguousDfuError) as exc:
@@ -313,12 +313,12 @@ def test_two_boards_with_no_choice_made_is_refused(paths, monkeypatch, settings)
 
 def test_naming_a_serial_resolves_two_boards(paths, monkeypatch, settings):
     """The case a second board on the bench tests."""
-    from klipper_updater.flash import flash_dfu_stm32
+    from mcu_updater.flash import flash_dfu_stm32
 
     patch_dfu(monkeypatch, stdout=TWO_BOARDS)
     commands = []
     monkeypatch.setattr(
-        "klipper_updater.flash.run_streamed",
+        "mcu_updater.flash.run_streamed",
         lambda cmd, **kw: commands.append(cmd) or 0,
     )
     settings.dry_run = False
@@ -335,8 +335,8 @@ def test_naming_a_serial_resolves_two_boards(paths, monkeypatch, settings):
 def test_naming_a_serial_that_is_not_there_is_refused(paths, monkeypatch, settings):
     """Rather than falling back to "the only one attached" - which is precisely
     how you flash the board you were trying not to."""
-    from klipper_updater.errors import DeviceNotFoundError
-    from klipper_updater.flash import flash_dfu_stm32
+    from mcu_updater.errors import DeviceNotFoundError
+    from mcu_updater.flash import flash_dfu_stm32
 
     patch_dfu(monkeypatch, stdout=ONE_BOARD)
     with pytest.raises(DeviceNotFoundError):

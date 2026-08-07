@@ -14,14 +14,14 @@ import shutil
 
 import pytest
 
-from klipper_updater.errors import KconfigError
-from klipper_updater.kconfig import (
+from mcu_updater.errors import KconfigError
+from mcu_updater.kconfig import (
     Serializer,
     SessionStore,
     _srctree,
     load_kconfiglib,
 )
-from klipper_updater.paths import Paths
+from mcu_updater.paths import Paths
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
 VENDORED = FIXTURES / "kconfiglib" / "kconfiglib.py"
@@ -240,7 +240,7 @@ def test_help_is_flagged_but_not_included(tree):
 
 
 def test_help_is_fetchable_on_demand(tree):
-    from klipper_updater.kconfig import help_for
+    from mcu_updater.kconfig import help_for
 
     kconf, _ = parse(tree)
     node = kconf.syms["WITH_HELP"].nodes[0]
@@ -297,7 +297,7 @@ def store(tmp_path, monkeypatch):
         make_tree(tmp_path, name)
     (tmp_path / "printer_data" / "config" / "mcu-updater").mkdir(parents=True)
     (tmp_path / "printer_data" / "mcu-updater").mkdir(parents=True)
-    paths = Paths.from_env(env={"KLIPPER_UPDATER_HOME": str(tmp_path)})
+    paths = Paths.from_env(env={"MCU_UPDATER_HOME": str(tmp_path)})
     return SessionStore(paths)
 
 
@@ -649,7 +649,7 @@ def test_klipper_and_katapult_are_separate_targets(store):
     ],
 )
 def test_same_value_normalises_only_where_it_should(kind, requested, actual, same):
-    from klipper_updater.kconfig import _same_value
+    from mcu_updater.kconfig import _same_value
 
     assert _same_value(kind, requested, actual) is same
 

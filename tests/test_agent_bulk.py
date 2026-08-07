@@ -15,11 +15,11 @@ import os
 
 import pytest
 
-from klipper_updater.agent.methods import Api
-from klipper_updater.agent.rpc import ERR_INVALID_PARAMS, RpcError
-from klipper_updater.config import Registry
-from klipper_updater.jobs import IMMEDIATELY_CANCELLABLE, JobRunner
-from klipper_updater.service import NullService
+from mcu_updater.agent.methods import Api
+from mcu_updater.agent.rpc import ERR_INVALID_PARAMS, RpcError
+from mcu_updater.config import Registry
+from mcu_updater.jobs import IMMEDIATELY_CANCELLABLE, JobRunner
+from mcu_updater.service import NullService
 
 from .conftest import make_device, write_settings
 
@@ -106,7 +106,7 @@ def bulk(paths, live_registry_text, fake_root):
     runner = JobRunner(
         paths,
         lambda: __import__(
-            "klipper_updater.settings", fromlist=["load_settings"]
+            "mcu_updater.settings", fromlist=["load_settings"]
         ).load_settings(paths.settings_file),
     )
     api = Api(paths, runner=runner, call=_moonraker({}))
@@ -139,7 +139,7 @@ def test_bulk_flashing_is_not_offered_while_flashing_is_disabled(paths, live_reg
         fh.write(live_registry_text)
     write_settings(paths, dry_run="true", service_backend="null")
     runner = JobRunner(paths, lambda: __import__(
-        "klipper_updater.settings", fromlist=["load_settings"]
+        "mcu_updater.settings", fromlist=["load_settings"]
     ).load_settings(paths.settings_file))
     caps = Api(paths, runner=runner).dispatch("fw.ping")["capabilities"]
 
@@ -181,7 +181,7 @@ def test_a_type_with_no_saved_config_is_skipped_not_failed(bulk, paths):
 
 
 def test_stale_skips_a_type_that_is_already_built(bulk, paths, settings):
-    from klipper_updater.build import build
+    from mcu_updater.build import build
 
     settings.dry_run = True
     _save_config(paths, EBB)
@@ -197,7 +197,7 @@ def test_stale_skips_a_type_that_is_already_built(bulk, paths, settings):
 def test_nothing_to_build_is_a_refusal_with_a_code_not_an_empty_job(bulk, paths, settings):
     """A job that starts and immediately does nothing reads as a bug. The panel
     switches on `nothing_to_do` to say so plainly."""
-    from klipper_updater.build import build
+    from mcu_updater.build import build
 
     settings.dry_run = True
     _save_config(paths, EBB)
@@ -365,7 +365,7 @@ def test_bulk_flash_is_refused_while_flashing_is_disabled(paths, live_registry_t
     _stage_artifact(paths, EBB)
     make_device(fake_root / "bus", "Klipper", EBB_CHIPSET, EBB_A)
     runner = JobRunner(paths, lambda: __import__(
-        "klipper_updater.settings", fromlist=["load_settings"]
+        "mcu_updater.settings", fromlist=["load_settings"]
     ).load_settings(paths.settings_file))
     api = Api(paths, runner=runner, call=_moonraker({EBB_A: OLD_VERSION}))
 
@@ -399,7 +399,7 @@ def test_a_batch_stops_klipper_once_not_once_per_board(bulk, paths, fake_root, m
     """Ten stop/start cycles would take far longer and give ten chances for the
     restart to be the thing that fails."""
     svc = NullService()
-    monkeypatch.setattr("klipper_updater.service.make_controller", lambda *a, **k: svc)
+    monkeypatch.setattr("mcu_updater.service.make_controller", lambda *a, **k: svc)
 
     _stage_artifact(paths, EBB)
     make_device(fake_root / "bus", "Klipper", EBB_CHIPSET, EBB_A)
@@ -419,8 +419,8 @@ def test_a_batch_stops_klipper_once_not_once_per_board(bulk, paths, fake_root, m
 
 def test_a_build_failure_does_not_abandon_the_rest_of_the_fleet(bulk, paths, monkeypatch):
     """One type failing to compile is usually about that type."""
-    from klipper_updater import build as build_mod
-    from klipper_updater.errors import BuildError
+    from mcu_updater import build as build_mod
+    from mcu_updater.errors import BuildError
 
     _save_config(paths, EBB)
     _save_config(paths, MMB)
@@ -468,10 +468,10 @@ def test_update_all_re_checks_the_printer_after_the_build(bulk, paths, fake_root
     stale by the time the flash starts, and this is the last moment before Klipper
     gets stopped - so it is checked again, and Klipper is never stopped at all.
     """
-    from klipper_updater import build as build_mod
+    from mcu_updater import build as build_mod
 
     svc = NullService()
-    monkeypatch.setattr("klipper_updater.service.make_controller", lambda *a, **k: svc)
+    monkeypatch.setattr("mcu_updater.service.make_controller", lambda *a, **k: svc)
 
     _save_config(paths, EBB)
     make_device(fake_root / "bus", "Klipper", EBB_CHIPSET, EBB_A)
@@ -502,12 +502,12 @@ def test_each_board_is_waited_for_before_klipper_is_started(bulk, paths, fake_ro
     MCU. Per board, not once at the end: the last board of a batch would otherwise
     have nothing between its write and the service restart.
     """
-    import klipper_updater.devices as devices_mod
-    import klipper_updater.flash as flash_mod
+    import mcu_updater.devices as devices_mod
+    import mcu_updater.flash as flash_mod
 
     order: list[str] = []
     svc = NullService()
-    monkeypatch.setattr("klipper_updater.service.make_controller", lambda *a, **k: svc)
+    monkeypatch.setattr("mcu_updater.service.make_controller", lambda *a, **k: svc)
     monkeypatch.setattr(
         flash_mod, "flash_katapult", lambda *a, **k: order.append(f"flash {a[4]}")
     )
@@ -554,7 +554,7 @@ def monkey_head(api, paths):
     board would read as `unknown_version` - which is a real answer, just not the
     one any of these tests are about.
     """
-    import klipper_updater.build as build_mod
+    import mcu_updater.build as build_mod
 
     build_mod._head_cache[os.path.abspath(paths.fw_dir("klipper"))] = (
         float("inf"),

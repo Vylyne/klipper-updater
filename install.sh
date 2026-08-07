@@ -211,10 +211,10 @@ function check_config {
     # what is wrong and how to fix it, so print that and nothing else.
     if PYTHONPATH="${INSTALL_PATH}/src" "${PYTHON_BIN}" -c '
 import sys
-from klipper_updater.config import Registry
-from klipper_updater.errors import UpdaterError
-from klipper_updater.paths import Paths
-from klipper_updater.settings import load_settings
+from mcu_updater.config import Registry
+from mcu_updater.errors import UpdaterError
+from mcu_updater.paths import Paths
+from mcu_updater.settings import load_settings
 paths = Paths.from_env()
 try:
     reg = Registry.load(paths)
@@ -445,11 +445,11 @@ function print_next_steps {
 
    curl -s http://localhost:7125/server/extensions/list
 
- ...should list an agent named "klipper_updater". Then try it:
+ ...should list an agent named "mcu_updater". Then try it:
 
    curl -s -X POST http://localhost:7125/server/extensions/request \\
      -H 'Content-Type: application/json' \\
-     -d '{"agent":"klipper_updater","method":"fw.status","arguments":{}}'
+     -d '{"agent":"mcu_updater","method":"fw.status","arguments":{}}'
 
  Logs:   ${PRINTER_DATA}/logs/mcu-updater.log
          (not in Mainsail's Logfiles panel - that lists a fixed set - but it is

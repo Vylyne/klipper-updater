@@ -1,7 +1,7 @@
 """Shared fixtures.
 
 Everything here leans on the single seam that makes this project testable:
-``Paths.from_env`` honours ``KLIPPER_UPDATER_*`` env vars, so a fake root in a
+``Paths.from_env`` honours ``MCU_UPDATER_*`` env vars, so a fake root in a
 tmp_path stands in for a whole printer host - no mocks, no monkeypatching of
 ``expanduser``, no hardware, and it all runs on Windows.
 """
@@ -12,8 +12,8 @@ import pathlib
 
 import pytest
 
-from klipper_updater.paths import Paths
-from klipper_updater.settings import Settings
+from mcu_updater.paths import Paths
+from mcu_updater.settings import Settings
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -29,7 +29,7 @@ def _instant_fake_builds(monkeypatch: pytest.MonkeyPatch) -> None:
     In production the fake build log replays at a realistic speed so the
     streaming UI is genuinely exercised. In tests that just makes the suite slow.
     """
-    monkeypatch.setattr("klipper_updater.build.FAKE_BUILD_DELAY", 0.0)
+    monkeypatch.setattr("mcu_updater.build.FAKE_BUILD_DELAY", 0.0)
 
 
 @pytest.fixture
@@ -49,8 +49,8 @@ def fake_root(tmp_path: pathlib.Path) -> pathlib.Path:
 def paths(fake_root: pathlib.Path) -> Paths:
     return Paths.from_env(
         env={
-            "KLIPPER_UPDATER_HOME": str(fake_root),
-            "KLIPPER_UPDATER_FAKE_BUS": str(fake_root / "bus"),
+            "MCU_UPDATER_HOME": str(fake_root),
+            "MCU_UPDATER_FAKE_BUS": str(fake_root / "bus"),
         }
     )
 
@@ -92,7 +92,7 @@ def write_settings(paths: Paths, **values: object) -> None:
     """
     import os
 
-    from klipper_updater.cfgdoc import CfgDocument
+    from mcu_updater.cfgdoc import CfgDocument
 
     text = ""
     if os.path.exists(paths.main_config):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from klipper_updater.devices import (
+from mcu_updater.devices import (
     STATE_KATAPULT,
     STATE_KLIPPER,
     STATE_OFFLINE,
@@ -13,7 +13,7 @@ from klipper_updater.devices import (
     scan,
     wait_for_device,
 )
-from klipper_updater.errors import BootloaderTimeoutError
+from mcu_updater.errors import BootloaderTimeoutError
 
 from .conftest import make_device
 
@@ -182,13 +182,13 @@ def test_a_board_in_its_bootloader_is_adoptable(paths, fake_root):
 def test_the_dfu_serial_is_derived_from_the_running_one():
     """Captured from a real BTT EBB36: dfu-util reported 3941335F3434, and the
     same board came back as 27000E000551343438333339-if00."""
-    from klipper_updater.devices import dfu_serial_for
+    from mcu_updater.devices import dfu_serial_for
 
     assert dfu_serial_for("27000E000551343438333339-if00") == "3941335F3434"
 
 
 def test_it_works_without_the_interface_suffix():
-    from klipper_updater.devices import dfu_serial_for
+    from mcu_updater.devices import dfu_serial_for
 
     assert dfu_serial_for("27000E000551343438333339") == "3941335F3434"
 
@@ -197,7 +197,7 @@ def test_the_words_are_little_endian_and_the_second_takes_its_TOP_nibbles():
     """Both halves of ST's Get_SerialNum, pinned separately - either read the
     wrong way round still produces twelve plausible hex digits, which would
     mislabel a board rather than fail."""
-    from klipper_updater.devices import dfu_serial_for
+    from mcu_updater.devices import dfu_serial_for
 
     # w0 = 0x00000001, w1 = 0xAABBCCDD, w2 = 0x00000002 -> sum 3, top of w1 AABB
     uid = "01000000" + "DDCCBBAA" + "02000000"
@@ -205,7 +205,7 @@ def test_the_words_are_little_endian_and_the_second_takes_its_TOP_nibbles():
 
 
 def test_the_sum_wraps_at_32_bits():
-    from klipper_updater.devices import dfu_serial_for
+    from mcu_updater.devices import dfu_serial_for
 
     uid = "FFFFFFFF" + "00000000" + "02000000"
     assert dfu_serial_for(uid) == "000000010000"
@@ -213,7 +213,7 @@ def test_the_sum_wraps_at_32_bits():
 
 def test_anything_that_is_not_a_96_bit_id_gets_no_answer():
     """None rather than a guess: a wrong label is worse than no label."""
-    from klipper_updater.devices import dfu_serial_for
+    from mcu_updater.devices import dfu_serial_for
 
     assert dfu_serial_for("short-if00") is None
     assert dfu_serial_for("ZZ000E000551343438333339-if00") is None

@@ -16,10 +16,10 @@ import os
 
 import pytest
 
-from klipper_updater.agent.methods import Api
-from klipper_updater.agent.rpc import RpcError
-from klipper_updater.config import Registry
-from klipper_updater.jobs import JobRunner
+from mcu_updater.agent.methods import Api
+from mcu_updater.agent.rpc import RpcError
+from mcu_updater.config import Registry
+from mcu_updater.jobs import JobRunner
 
 from .conftest import make_device, write_settings
 from .test_agent_dfu import ONE_BOARD, TWO_BOARDS, patch_dfu
@@ -33,7 +33,7 @@ def _runner(paths) -> JobRunner:
     return JobRunner(
         paths,
         lambda: __import__(
-            "klipper_updater.settings", fromlist=["load_settings"]
+            "mcu_updater.settings", fromlist=["load_settings"]
         ).load_settings(paths.settings_file),
     )
 
@@ -172,7 +172,7 @@ def test_two_boards_is_refused_until_one_is_named(adder, paths, monkeypatch):
 def test_naming_one_of_two_gets_past_the_gate(adder, paths, monkeypatch):
     _stage_katapult(paths)
     patch_dfu(monkeypatch, stdout=TWO_BOARDS)
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB, "dfu_serial": "205B33753539"})
     assert res["dfu_serial"] == "205B33753539"
@@ -193,7 +193,7 @@ def test_naming_a_serial_that_is_not_in_dfu_is_refused(adder, paths, monkeypatch
 def test_a_lone_board_needs_no_choice(adder, paths, monkeypatch):
     _stage_katapult(paths)
     patch_dfu(monkeypatch, stdout=ONE_BOARD)
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
     # Resolved for the caller, and reported so the log names what was written to.
@@ -213,7 +213,7 @@ def test_the_new_board_is_found_by_diffing_the_bus(adder, paths, fake_root, monk
     def appear(*args, **kwargs):
         make_device(fake_root / "bus", "katapult", EBB_CHIPSET, "NEWBOARD-if00")
 
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", appear)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", appear)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
     assert adder.runner.wait(timeout=30)
@@ -238,7 +238,7 @@ def test_a_katapult_board_already_on_the_bus_is_not_reported_as_new(
     make_device(fake_root / "bus", "katapult", EBB_CHIPSET, "WASHERE-if00")
     _stage_katapult(paths)
     patch_dfu(monkeypatch, stdout=ONE_BOARD)
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
     assert adder.runner.wait(timeout=30)
@@ -259,7 +259,7 @@ def test_the_new_board_is_told_apart_from_one_already_in_katapult(
     def appear(*args, **kwargs):
         make_device(fake_root / "bus", "katapult", EBB_CHIPSET, "NEWBOARD-if00")
 
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", appear)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", appear)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
     assert adder.runner.wait(timeout=30)
@@ -286,7 +286,7 @@ def test_a_re_bootloadered_tracked_board_is_reported_as_such_not_as_nothing(
     def appear(*args, **kwargs):
         make_device(fake_root / "bus", "katapult", EBB_CHIPSET, TRACKED)
 
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", appear)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", appear)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
     assert adder.runner.wait(timeout=30)
@@ -309,7 +309,7 @@ def test_no_new_board_warns_rather_than_failing_the_job(adder, paths, monkeypatc
     marginal port. Saying what to look at beats failing a job that worked."""
     _stage_katapult(paths)
     patch_dfu(monkeypatch, stdout=ONE_BOARD)
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
     assert adder.runner.wait(timeout=30)
@@ -325,13 +325,13 @@ def test_klipper_is_never_stopped(adder, paths, monkeypatch):
     """A board that is not in printer.cfg is not held by Klipper, so there is no
     port contention and no reason for an outage. The CLI's add-mcu never stopped
     it either."""
-    from klipper_updater.service import NullService
+    from mcu_updater.service import NullService
 
     svc = NullService()
-    monkeypatch.setattr("klipper_updater.service.make_controller", lambda *a, **k: svc)
+    monkeypatch.setattr("mcu_updater.service.make_controller", lambda *a, **k: svc)
     _stage_katapult(paths)
     patch_dfu(monkeypatch, stdout=ONE_BOARD)
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
     assert adder.runner.wait(timeout=30)
@@ -350,7 +350,7 @@ def test_adopting_the_result_is_the_existing_method(adder, paths, fake_root, mon
     def appear(*args, **kwargs):
         make_device(fake_root / "bus", "katapult", EBB_CHIPSET, "NEWBOARD-if00")
 
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", appear)
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", appear)
 
     res = adder.dispatch("fw.add_mcu.start", {"name": EBB})
     assert adder.runner.wait(timeout=30)

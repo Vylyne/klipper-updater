@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from klipper_updater.agent.rpc import (
+from mcu_updater.agent.rpc import (
     ERR_INVALID_PARAMS,
     ERR_METHOD_NOT_FOUND,
     ETX,
@@ -23,7 +23,7 @@ from klipper_updater.agent.rpc import (
     frame,
     unframe,
 )
-from klipper_updater.errors import UnknownTypeError
+from mcu_updater.errors import UnknownTypeError
 
 # --------------------------------------------------------------------------
 # framing, in isolation
@@ -305,10 +305,10 @@ def test_unparseable_input_is_discarded_without_killing_the_reader(peer_and_serv
 
 def test_positional_params_are_rejected_clearly(peer_and_server):
     """Moonraker relays whatever `arguments` the caller passed, including a list."""
-    from klipper_updater.agent.methods import Api
-    from klipper_updater.paths import Paths
+    from mcu_updater.agent.methods import Api
+    from mcu_updater.paths import Paths
 
-    api = Api(Paths.from_env(env={"KLIPPER_UPDATER_HOME": "/tmp/x"}))
+    api = Api(Paths.from_env(env={"MCU_UPDATER_HOME": "/tmp/x"}))
     with pytest.raises(RpcError) as exc:
         api.dispatch("fw.ping", ["positional"])
     assert exc.value.code == ERR_INVALID_PARAMS

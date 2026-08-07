@@ -13,8 +13,8 @@ import os
 
 import pytest
 
-from klipper_updater import displays
-from klipper_updater.errors import ConfigError, FlashError, SourceTreeMissingError
+from mcu_updater import displays
+from mcu_updater.errors import ConfigError, FlashError, SourceTreeMissingError
 
 # Captured verbatim from a successful `pio run -e knomi_toolchanger -t upload`
 # on the printer. Parsing invented output is how the dfu-util altsetting bug
@@ -105,7 +105,7 @@ def test_no_display_sections_is_not_an_error(paths):
 
 def test_display_sections_do_not_disturb_the_mcu_registry(paths, live_registry_text):
     """They share a file, so each has to ignore the other's sections."""
-    from klipper_updater.config import Registry
+    from mcu_updater.config import Registry
 
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text + "\n[display knomi_toolchanger]\nsource: ~/k\n")
@@ -238,7 +238,7 @@ def test_no_source_configured_is_its_own_error(paths, settings):
 
 
 def test_pio_not_installed_names_the_fix(settings, monkeypatch):
-    from klipper_updater.errors import ToolMissingError
+    from mcu_updater.errors import ToolMissingError
 
     monkeypatch.setattr(displays.shutil, "which", lambda name: None)
     monkeypatch.setattr(displays.os.path, "exists", lambda path: False)
@@ -449,7 +449,7 @@ def test_resolve_port_survives_a_path_it_cannot_stat(monkeypatch):
 # against its source, which says nothing about what is on the board.
 # --------------------------------------------------------------------------
 
-from klipper_updater.displays import (  # noqa: E402
+from mcu_updater.displays import (  # noqa: E402
     FW_BEHIND,
     FW_CURRENT,
     FW_DIRTY,
@@ -517,7 +517,7 @@ def test_a_screen_that_reports_no_version_is_unknown():
 
 
 def test_source_state_survives_a_directory_that_is_not_a_checkout(tmp_path):
-    from klipper_updater.displays import source_state
+    from mcu_updater.displays import source_state
 
     assert source_state(str(tmp_path)).head is None
     assert source_state(str(tmp_path / "nope")).head is None
@@ -532,7 +532,7 @@ def test_source_state_survives_a_directory_that_is_not_a_checkout(tmp_path):
 # every screen of the type - silently, because the upload itself succeeds.
 # --------------------------------------------------------------------------
 
-from klipper_updater.displays import (  # noqa: E402
+from mcu_updater.displays import (  # noqa: E402
     ART_CURRENT,
     ART_DIRTY,
     ART_FOREIGN,
@@ -544,7 +544,7 @@ from klipper_updater.displays import (  # noqa: E402
 
 
 def _bin(display):
-    from klipper_updater.displays import firmware_bin
+    from mcu_updater.displays import firmware_bin
 
     path = firmware_bin(display)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -589,7 +589,7 @@ def test_a_rebuild_by_someone_else_invalidates_our_provenance(paths, display):
     record_build(paths, display, TREE)
     assert artifact_state(paths, display, TREE) == ART_CURRENT
 
-    from klipper_updater.displays import firmware_bin
+    from mcu_updater.displays import firmware_bin
 
     with open(firmware_bin(display), "wb") as fh:
         fh.write(b"\x00different and longer")

@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import pytest
 
-from klipper_updater import displays as displays_mod
-from klipper_updater.agent.methods import Api
-from klipper_updater.agent.rpc import RpcError
-from klipper_updater.jobs import JobRunner
-from klipper_updater.service import NullService
+from mcu_updater import displays as displays_mod
+from mcu_updater.agent.methods import Api
+from mcu_updater.agent.rpc import RpcError
+from mcu_updater.jobs import JobRunner
+from mcu_updater.service import NullService
 
 from .conftest import write_settings
 
@@ -73,7 +73,7 @@ def api(paths, live_registry_text, fake_root, screens):
     runner = JobRunner(
         paths,
         lambda: __import__(
-            "klipper_updater.settings", fromlist=["load_settings"]
+            "mcu_updater.settings", fromlist=["load_settings"]
         ).load_settings(paths.settings_file),
     )
     agent = Api(paths, runner=runner, call=_moonraker(screens))
@@ -113,7 +113,7 @@ def test_flashing_displays_needs_it_enabled(paths, live_registry_text, fake_root
     with open(paths.registry_file, "a", encoding="utf-8") as fh:
         fh.write(f"\n[display {ENV}]\nsource: {fake_root}\n")
     runner = JobRunner(paths, lambda: __import__(
-        "klipper_updater.settings", fromlist=["load_settings"]
+        "mcu_updater.settings", fromlist=["load_settings"]
     ).load_settings(paths.settings_file))
 
     with pytest.raises(RpcError) as exc:
@@ -162,7 +162,7 @@ def test_the_screens_are_read_before_klipper_is_stopped(api, no_pio, monkeypatch
     """The list comes from a *running* Klipper. Reading it after the stop would
     find nothing, and the batch would silently flash zero displays."""
     svc = NullService()
-    monkeypatch.setattr("klipper_updater.service.make_controller", lambda *a, **k: svc)
+    monkeypatch.setattr("mcu_updater.service.make_controller", lambda *a, **k: svc)
 
     order: list[str] = []
     real_stop = svc.stop
@@ -191,7 +191,7 @@ def test_the_screens_are_read_before_klipper_is_stopped(api, no_pio, monkeypatch
 
 def test_klipper_is_stopped_once_for_the_whole_batch(api, no_pio, monkeypatch):
     svc = NullService()
-    monkeypatch.setattr("klipper_updater.service.make_controller", lambda *a, **k: svc)
+    monkeypatch.setattr("mcu_updater.service.make_controller", lambda *a, **k: svc)
 
     res = api.dispatch("fw.display.flash", {"name": ENV})
     assert api.runner.wait(timeout=30)
@@ -293,7 +293,7 @@ def test_a_build_touches_no_display_and_needs_no_flash_permission(
         fh.write(f"\n[display {ENV}]\nsource: {tree}\n")
 
     runner = JobRunner(paths, lambda: __import__(
-        "klipper_updater.settings", fromlist=["load_settings"]
+        "mcu_updater.settings", fromlist=["load_settings"]
     ).load_settings(paths.settings_file))
     agent = Api(paths, runner=runner, call=_moonraker(screens))
 

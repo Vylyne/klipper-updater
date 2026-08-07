@@ -181,7 +181,7 @@ class CfgDocument:
             opt_match = _OPTION_RE.match(line)
             if opt_match:
                 key = opt_match.group("key").strip()
-                value = _strip_inline_comment(opt_match.group("value").strip())
+                value = opt_match.group("value").strip()
                 current_option = Option(key, index, index + 1, value)
                 current.options.setdefault(key, current_option)
                 continue

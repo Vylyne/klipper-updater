@@ -6,9 +6,9 @@ import sys
 
 import pytest
 
-from klipper_updater.cfgdoc import CfgDocument
-from klipper_updater.config import MakefilePatch, Registry, section_name, validate_type_name
-from klipper_updater.errors import (
+from mcu_updater.cfgdoc import CfgDocument
+from mcu_updater.config import MakefilePatch, Registry, section_name, validate_type_name
+from mcu_updater.errors import (
     AmbiguousSerialError,
     ConfigCorruptError,
     ConfigError,
@@ -336,13 +336,13 @@ def test_the_pre_merge_registry_filename_is_guarded(paths):
 def test_the_intermediate_config_dir_is_also_guarded(paths, fake_root):
     """The config directory was renamed with the project. Someone who pulled in
     between would otherwise have their registry silently ignored."""
-    old = fake_root / "printer_data" / "config" / "klipper-updater"
+    old = fake_root / "printer_data" / "config" / "mcu-updater"
     old.mkdir(parents=True, exist_ok=True)
     (old / "mcus.cfg").write_text("[mcu a]\nchipset: x\n", encoding="utf-8")
 
     with pytest.raises(ConfigError) as exc:
         Registry.load(paths)
-    assert "klipper-updater" in str(exc.value)
+    assert "mcu-updater" in str(exc.value)
     assert "mcu-updater" in str(exc.value)
 
 
@@ -391,7 +391,7 @@ def test_mutate_uses_its_own_lock_file(paths):
     minutes - they touch different things."""
     assert paths.registry_lock_file != paths.lock_file
 
-    from klipper_updater.lock import exclusive
+    from mcu_updater.lock import exclusive
 
     with exclusive(paths, "a long build"):
         with Registry.mutate(paths, "add a serial anyway") as reg:
@@ -401,7 +401,7 @@ def test_mutate_uses_its_own_lock_file(paths):
 
 def test_mutate_records_who_is_editing(paths, live_registry_text):
     """Portable half of the locking check: the lock is taken, and labelled."""
-    from klipper_updater.lock import ExclusiveLock
+    from mcu_updater.lock import ExclusiveLock
 
     _write(paths, live_registry_text)
     with Registry.mutate(paths, "add serial FOO") as reg:
@@ -420,7 +420,7 @@ def test_a_concurrent_mutation_is_refused_rather_than_interleaved(paths, live_re
     the whole failure mode this phase has to avoid. Refusing is the safe answer -
     the lock is held for sub-milliseconds, so a real collision needs bad luck and
     the caller can simply retry."""
-    from klipper_updater.errors import BusyError
+    from mcu_updater.errors import BusyError
 
     _write(paths, live_registry_text)
     with Registry.mutate(paths, "first") as reg:
@@ -526,7 +526,7 @@ def test_an_inline_comment_on_a_setting_is_not_part_of_its_value(paths):
     """`enable_flashing: true   # turned on` must parse as true, not as the string
     "true   # turned on" - which parse_bool would reject, silently leaving
     flashing disabled."""
-    from klipper_updater.settings import load_settings
+    from mcu_updater.settings import load_settings
 
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(ANNOTATED)

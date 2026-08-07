@@ -24,7 +24,7 @@ import os
 
 import pytest
 
-from klipper_updater.agent.methods import Api
+from mcu_updater.agent.methods import Api
 
 
 def _moonraker(sections: dict, reachable: bool = True):
@@ -200,7 +200,7 @@ def test_configured_displays_appear_in_status(api, paths, fake_root, live_regist
 
 
 def test_a_known_mac_travels_with_its_screen(api, paths, fake_root):
-    from klipper_updater import displays as displays_mod
+    from mcu_updater import displays as displays_mod
 
     port = fake_root / "knomi_t0"
     port.write_text("", encoding="utf-8")

@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from klipper_updater.build import build, read_sidecar, staleness
-from klipper_updater.config import Registry
-from klipper_updater.errors import ConfigNotFoundError, SourceTreeMissingError
+from mcu_updater.build import build, read_sidecar, staleness
+from mcu_updater.config import Registry
+from mcu_updater.errors import ConfigNotFoundError, SourceTreeMissingError
 
 from .conftest import cmd_tokens
 
@@ -107,7 +107,7 @@ def test_staleness_detects_a_changed_source_tree(paths, settings):
 
 
 def _has_git(paths) -> bool:
-    from klipper_updater.build import git_head
+    from mcu_updater.build import git_head
 
     return git_head(paths.fw_dir("klipper")) is not None
 
@@ -199,9 +199,9 @@ def test_a_build_records_the_binary_hash(paths, live_registry_text):
     downstream provenance logic needs no special case."""
     import dataclasses
 
-    from klipper_updater.build import build, read_sidecar
-    from klipper_updater.config import Registry
-    from klipper_updater.settings import Settings
+    from mcu_updater.build import build, read_sidecar
+    from mcu_updater.config import Registry
+    from mcu_updater.settings import Settings
 
     dry = dataclasses.replace(
         Settings(), dry_run=True, service_backend="null", clean_before_build=False
@@ -217,7 +217,7 @@ def test_a_build_records_the_binary_hash(paths, live_registry_text):
 
 
 def test_a_record_round_trips(paths):
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     log = FlashLog(paths)
     assert log.all() == {}
@@ -234,7 +234,7 @@ def test_a_record_is_discarded_when_the_board_disagrees(paths):
     """Someone flashed by hand outside the tool, so our note about which binary the
     board holds is no longer evidence of anything. Better to report unknown than a
     stale answer with a straight face."""
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     log = FlashLog(paths)
     log.record("A-if00", mcu_type="t", fw="klipper", bin_sha256="aa" * 32, fw_sha="d7cea5bb")
@@ -251,7 +251,7 @@ def test_a_corrupt_log_reads_as_empty(paths):
     the middle of painting a status panel is not."""
     import os
 
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     os.makedirs(paths.data_dir, exist_ok=True)
     with open(paths.flashlog_file, "w", encoding="utf-8") as fh:
@@ -263,7 +263,7 @@ def test_a_corrupt_log_reads_as_empty(paths):
 
 
 def test_records_for_other_boards_survive_a_write(paths):
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     log = FlashLog(paths)
     log.record("A", mcu_type="t", fw="klipper", bin_sha256="aa", fw_sha="1")
@@ -272,7 +272,7 @@ def test_records_for_other_boards_survive_a_write(paths):
 
 
 def test_forget_drops_one_record(paths):
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     log = FlashLog(paths)
     log.record("A", mcu_type="t", fw="klipper", bin_sha256="aa", fw_sha="1")
@@ -284,7 +284,7 @@ def test_forget_drops_one_record(paths):
 def test_no_temp_file_is_left_behind(paths):
     import os
 
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     log = FlashLog(paths)
     log.record("A", mcu_type="t", fw="klipper", bin_sha256="aa", fw_sha="1")

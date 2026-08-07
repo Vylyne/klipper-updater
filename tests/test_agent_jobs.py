@@ -13,10 +13,10 @@ import time
 
 import pytest
 
-from klipper_updater.agent.events import EventEmitter, LogBatcher
-from klipper_updater.agent.methods import Api
-from klipper_updater.agent.rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcError
-from klipper_updater.jobs import Job, JobRunner
+from mcu_updater.agent.events import EventEmitter, LogBatcher
+from mcu_updater.agent.methods import Api
+from mcu_updater.agent.rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcError
+from mcu_updater.jobs import Job, JobRunner
 
 
 class CapturingEmitter(EventEmitter):

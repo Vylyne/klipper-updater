@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from klipper_updater.config import Registry
-from klipper_updater.errors import ConfigError
-from klipper_updater.settings import (
+from mcu_updater.config import Registry
+from mcu_updater.errors import ConfigError
+from mcu_updater.settings import (
     Settings,
     legacy_settings_warning,
     load_settings,
@@ -154,7 +154,7 @@ def test_a_second_updater_section_is_refused(paths):
 
 def test_a_duplicate_mcu_section_is_refused(paths):
     """Same trap on the registry side: the second board's serials would vanish."""
-    from klipper_updater.errors import ConfigCorruptError
+    from mcu_updater.errors import ConfigCorruptError
 
     with open(paths.main_config, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("[mcu a]\nchipset: x\nserials:\n    S1\n\n[mcu a]\nserials:\n    S2\n")
@@ -242,7 +242,7 @@ def test_every_settings_field_the_code_reads_actually_exists():
     # function is meant to work.
     defensive = re.compile(r"""getattr\(\s*(?:self\.)?settings(?:\(\))?\s*,\s*["'][^"']+["']\s*,""")
 
-    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "klipper_updater"
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "mcu_updater"
     offenders = [
         f"{path.relative_to(src)}:{n}"
         for path in src.rglob("*.py")

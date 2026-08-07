@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from klipper_updater.build import makefile_patches
-from klipper_updater.config import MakefilePatch, McuType
+from mcu_updater.build import makefile_patches
+from mcu_updater.config import MakefilePatch, McuType
 
 ORIGINAL = b"# klipper src makefile\nsrc-y += sched.c\n"
 
@@ -144,9 +144,9 @@ def test_patches_are_reverted_when_make_blows_up(paths, settings, fake_root, mon
     """
     import os
 
-    from klipper_updater import build as build_mod
-    from klipper_updater.config import Registry
-    from klipper_updater.errors import ToolMissingError
+    from mcu_updater import build as build_mod
+    from mcu_updater.config import Registry
+    from mcu_updater.errors import ToolMissingError
 
     makefile = fake_root / "klipper" / "src" / "Makefile"
     makefile.write_bytes(ORIGINAL)

@@ -1,6 +1,6 @@
 {
   "_comment": "Comment handling in the cfg parser. Each of these was silent data loss.",
-  "file": "src/klipper_updater/cfgdoc.py",
+  "file": "src/mcu_updater/cfgdoc.py",
   "command": [
     "python",
     "-m",

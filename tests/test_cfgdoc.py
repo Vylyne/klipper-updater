@@ -7,7 +7,7 @@ parsing.
 
 from __future__ import annotations
 
-from klipper_updater.cfgdoc import CfgDocument
+from mcu_updater.cfgdoc import CfgDocument
 
 SAMPLE = """\
 # Klipper Updater MCU registry.

@@ -14,10 +14,10 @@ import time
 
 import pytest
 
-from klipper_updater import AGENT_NAME, __version__
-from klipper_updater.agent.events import RESERVED_EVENTS, EventEmitter
-from klipper_updater.agent.rpc import MoonrakerPeer, frame, unframe
-from klipper_updater.agent.service import Agent
+from mcu_updater import AGENT_NAME, __version__
+from mcu_updater.agent.events import RESERVED_EVENTS, EventEmitter
+from mcu_updater.agent.rpc import MoonrakerPeer, frame, unframe
+from mcu_updater.agent.service import Agent
 
 from .conftest import write_settings
 
@@ -260,7 +260,7 @@ def test_run_once_returns_when_moonraker_disconnects(wired):
 def test_run_forever_survives_a_missing_socket(paths):
     """A cold boot reaches the agent before moonraker is listening."""
     agent = Agent(paths, socket_path=str(paths.home) + "/definitely-not-a-socket")
-    from klipper_updater.agent import service as service_mod
+    from mcu_updater.agent import service as service_mod
 
     # Collapse the backoff so the test is quick.
     original, service_mod.BACKOFF = service_mod.BACKOFF, (0.05,)
@@ -414,7 +414,7 @@ def test_a_build_can_be_cancelled_over_the_wire(wired, paths, monkeypatch):
     # The autouse fixture makes dry-run builds instant, which means the job can
     # finish before the cancel arrives. Slow it down so this tests cancellation
     # rather than scheduling luck.
-    monkeypatch.setattr("klipper_updater.build.FAKE_BUILD_DELAY", 0.03)
+    monkeypatch.setattr("mcu_updater.build.FAKE_BUILD_DELAY", 0.03)
 
     write_settings(paths, dry_run="true", service_backend="null")
     os.makedirs(paths.type_dir("bttebb36"), exist_ok=True)

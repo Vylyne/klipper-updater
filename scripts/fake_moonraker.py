@@ -10,7 +10,7 @@ the real agent process end to end.
     ./scripts/fake_moonraker.py /tmp/fake-moonraker.sock
 
     # terminal 2
-    PYTHONPATH=src python3 -m klipper_updater.agent \\
+    PYTHONPATH=src python3 -m mcu_updater.agent \\
         --socket /tmp/fake-moonraker.sock -v
 
 Then type method names at the harness prompt:
@@ -20,7 +20,7 @@ Then type method names at the harness prompt:
     > fw.bus.scan {"only_untracked": true}
 
 It prints the agent's replies, and every event the agent pushes. Combine with
-KLIPPER_UPDATER_FAKE_BUS to simulate boards appearing and disappearing.
+MCU_UPDATER_FAKE_BUS to simulate boards appearing and disappearing.
 """
 
 from __future__ import annotations

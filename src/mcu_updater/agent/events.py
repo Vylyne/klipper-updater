@@ -4,7 +4,7 @@ An agent emits with ``connection.send_event``; clients receive it as a
 ``notify_agent_event`` notification whose params are a *list* containing one
 object::
 
-    [{"agent": "klipper_updater", "event": "state", "data": {...}}]
+    [{"agent": "mcu_updater", "event": "state", "data": {...}}]
 
 ``connected`` and ``disconnected`` are reserved - Moonraker emits those itself,
 with the agent's identify payload, and rejects any attempt to send them. That is

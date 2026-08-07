@@ -4,7 +4,7 @@ The contract between `mcu-updater` (Python) and the Mainsail panel
 (TypeScript). Both sides are hand-written, so **this file is the single source of
 truth** — and `tests/test_agent_methods.py` is what stops them drifting.
 
-- Agent name: `klipper_updater` — a protocol identifier, deliberately unchanged
+- Agent name: `mcu_updater` — a protocol identifier, deliberately unchanged
   when the project was renamed to `mcu-updater`; the panel matches on it.
 - `api_version`: **1**
 - Every planned capability has shipped: build, flash, bulk build/flash/update,
@@ -22,7 +22,7 @@ The agent connects to `~/printer_data/comms/moonraker.sock` and identifies itsel
 
 ```json
 {"jsonrpc": "2.0", "id": 1, "method": "server.connection.identify",
- "params": {"client_name": "klipper_updater", "version": "0.9.0",
+ "params": {"client_name": "mcu_updater", "version": "0.9.0",
             "type": "agent", "url": "https://github.com/Vylyne/mcu-updater"}}
 ```
 
@@ -43,7 +43,7 @@ From a front end, over Mainsail's existing websocket:
 
 ```ts
 this.$socket.emit('server.extensions.request', {
-    agent: 'klipper_updater',
+    agent: 'mcu_updater',
     method: 'fw.status',
     arguments: {},
 })
@@ -667,7 +667,7 @@ The agent pushes with `connection.send_event`; clients receive
 
 ```json
 {"jsonrpc": "2.0", "method": "notify_agent_event",
- "params": [{"agent": "klipper_updater", "event": "state", "data": {...}}]}
+ "params": [{"agent": "mcu_updater", "event": "state", "data": {...}}]}
 ```
 
 | Event | `data` | When |
@@ -696,7 +696,7 @@ send them. That is deliberately what the panel uses for availability detection.
 
 No polling needed:
 
-1. On store init, `server.extensions.list` → is `klipper_updater` present?
+1. On store init, `server.extensions.list` → is `mcu_updater` present?
 2. If so, `fw.ping` (version gate), then `fw.status`.
 3. Live updates come from Moonraker's own `connected` / `disconnected` agent
    events.

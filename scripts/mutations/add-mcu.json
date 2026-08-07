@@ -1,6 +1,6 @@
 {
   "_comment": "Phase 6 guards. Each one refuses before a job exists, or picks the right board.",
-  "file": "src/klipper_updater/agent/methods.py",
+  "file": "src/mcu_updater/agent/methods.py",
   "command": [
     "python",
     "-m",

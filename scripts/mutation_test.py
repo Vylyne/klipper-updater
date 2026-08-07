@@ -11,7 +11,7 @@ SURVIVED (they passed without it, so it is untested).
 The spec is JSON so that needles can span lines without shell quoting:
 
     {
-      "file": "src/klipper_updater/agent/methods.py",
+      "file": "src/mcu_updater/agent/methods.py",
       "command": ["python", "-m", "pytest", "tests/test_agent_bulk.py", "-q"],
       "mutations": [
         {

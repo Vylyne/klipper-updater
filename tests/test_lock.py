@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-from klipper_updater.errors import BusyError
-from klipper_updater.lock import ExclusiveLock, exclusive
+from mcu_updater.errors import BusyError
+from mcu_updater.lock import ExclusiveLock, exclusive
 
 posix_only = pytest.mark.skipif(
     sys.platform == "win32",
@@ -84,9 +84,9 @@ def test_a_second_process_is_refused_and_told_who_holds_it(paths, tmp_path):
         f"""
         import sys, time
         sys.path.insert(0, {os.path.join(os.getcwd(), "src")!r})
-        from klipper_updater.paths import Paths
-        from klipper_updater.lock import exclusive
-        p = Paths.from_env(env={{"KLIPPER_UPDATER_HOME": {str(paths.home)!r}}})
+        from mcu_updater.paths import Paths
+        from mcu_updater.lock import exclusive
+        p = Paths.from_env(env={{"MCU_UPDATER_HOME": {str(paths.home)!r}}})
         with exclusive(p, "child build"):
             print("HELD", flush=True)
             time.sleep(30)
@@ -117,9 +117,9 @@ def test_the_lock_is_released_when_the_holder_dies(paths, tmp_path):
         f"""
         import sys, time
         sys.path.insert(0, {os.path.join(os.getcwd(), "src")!r})
-        from klipper_updater.paths import Paths
-        from klipper_updater.lock import exclusive
-        p = Paths.from_env(env={{"KLIPPER_UPDATER_HOME": {str(paths.home)!r}}})
+        from mcu_updater.paths import Paths
+        from mcu_updater.lock import exclusive
+        p = Paths.from_env(env={{"MCU_UPDATER_HOME": {str(paths.home)!r}}})
         # Keep the reference. An unassigned ExclusiveLock is freed at once,
         # closing its fd and releasing the flock - so the child would hold
         # nothing and this test would pass without testing anything.

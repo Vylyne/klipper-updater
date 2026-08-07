@@ -8,10 +8,10 @@ import time
 
 import pytest
 
-from klipper_updater.errors import BusyError, UpdaterError
-from klipper_updater.jobs import CANCELLED, FAILED, RUNNING, SUCCEEDED, Job, JobRunner
-from klipper_updater.lock import exclusive
-from klipper_updater.settings import Settings
+from mcu_updater.errors import BusyError, UpdaterError
+from mcu_updater.jobs import CANCELLED, FAILED, RUNNING, SUCCEEDED, Job, JobRunner
+from mcu_updater.lock import exclusive
+from mcu_updater.settings import Settings
 
 
 @pytest.fixture
@@ -183,7 +183,7 @@ def test_the_lock_is_released_even_when_the_job_crashes(runner, paths):
 
 
 def test_a_typed_error_keeps_its_stable_code(runner):
-    from klipper_updater.errors import BuildError
+    from mcu_updater.errors import BuildError
 
     runner.submit("build", {}, lambda ctx: (_ for _ in ()).throw(BuildError("make failed")))
     assert runner.wait(timeout=10)
@@ -384,7 +384,7 @@ def test_a_successful_job_logs_nothing(logged_runner):
 
 def test_a_cancelled_job_is_not_reported_as_a_failure(logged_runner):
     """The user asked for it; it is not something to go and read about."""
-    from klipper_updater.errors import OperationCancelled
+    from mcu_updater.errors import OperationCancelled
 
     def cancelled(ctx):
         raise OperationCancelled("cancelled")

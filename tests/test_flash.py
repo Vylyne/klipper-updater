@@ -4,15 +4,15 @@ import os
 
 import pytest
 
-from klipper_updater import flash as flash_mod
-from klipper_updater.errors import (
+from mcu_updater import flash as flash_mod
+from mcu_updater.errors import (
     AmbiguousDfuError,
     DeviceNotFoundError,
     FlashError,
     ToolMissingError,
     UnsupportedChipsetError,
 )
-from klipper_updater.flash import (
+from mcu_updater.flash import (
     flash_dfu_stm32,
     flash_initial_bootloader,
     flash_katapult,
@@ -258,7 +258,7 @@ def test_two_real_boards_are_still_refused(monkeypatch):
 def test_permission_denied_is_not_reported_as_no_device(monkeypatch):
     """"Hold BOOT0 and replug" is the worst possible advice here - the jumper was
     already right and nothing the user does at the board will help."""
-    from klipper_updater.errors import DfuPermissionError
+    from mcu_updater.errors import DfuPermissionError
 
     _fake_dfu_util(monkeypatch, "", _REAL_DENIED)
     with pytest.raises(DfuPermissionError) as exc:

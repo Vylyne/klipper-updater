@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from klipper_updater.errors import PrintInProgressError
-from klipper_updater.service import (
+from mcu_updater.errors import PrintInProgressError
+from mcu_updater.service import (
     Journal,
     MoonrakerService,
     NullService,
@@ -17,7 +17,7 @@ from klipper_updater.service import (
     make_controller,
     reconcile,
 )
-from klipper_updater.settings import Settings
+from mcu_updater.settings import Settings
 
 
 class FakeService(NullService):
@@ -118,7 +118,7 @@ def test_dry_run_always_gets_the_null_backend(paths):
 
 def test_moonraker_backend_needs_a_call_channel(paths):
     """The CLI has no Moonraker connection, so it must fall back to systemd."""
-    from klipper_updater.service import SystemdService
+    from mcu_updater.service import SystemdService
 
     svc = make_controller(Settings(service_backend="moonraker"), call=None)
     assert isinstance(svc, SystemdService)

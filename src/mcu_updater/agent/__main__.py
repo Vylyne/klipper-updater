@@ -1,4 +1,4 @@
-"""``python -m klipper_updater.agent`` - the systemd entry point."""
+"""``python -m mcu_updater.agent`` - the systemd entry point."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def setup_logging(path: Optional[str], verbose: bool) -> logging.Logger:
     level = logging.DEBUG if verbose else logging.INFO
-    root = logging.getLogger("klipper_updater")
+    root = logging.getLogger("mcu_updater")
     root.setLevel(level)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
 

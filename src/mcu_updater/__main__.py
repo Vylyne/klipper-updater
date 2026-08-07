@@ -1,4 +1,4 @@
-"""``python -m klipper_updater``"""
+"""``python -m mcu_updater``"""
 
 from __future__ import annotations
 

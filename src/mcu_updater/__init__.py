@@ -19,6 +19,6 @@ __version__ = "0.9.0"
 # panel refuses to render if it sees an API version it doesn't know.
 API_VERSION = 1
 
-AGENT_NAME = "klipper_updater"
+AGENT_NAME = "mcu_updater"
 
 __all__ = ["__version__", "API_VERSION", "AGENT_NAME"]

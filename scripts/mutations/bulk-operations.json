@@ -1,6 +1,6 @@
 {
   "_comment": "Guards that must stay load-bearing. Run: ./scripts/mutation_test.py scripts/mutations/bulk-operations.json",
-  "file": "src/klipper_updater/agent/methods.py",
+  "file": "src/mcu_updater/agent/methods.py",
   "command": [
     "python",
     "-m",

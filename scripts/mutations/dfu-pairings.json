@@ -1,6 +1,6 @@
 {
   "_comment": "Guards on adopting a late board. This edits the registry unasked, so each one is about never adopting the WRONG thing.",
-  "file": "src/klipper_updater/agent/methods.py",
+  "file": "src/mcu_updater/agent/methods.py",
   "command": [
     "python",
     "-m",

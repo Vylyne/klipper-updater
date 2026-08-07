@@ -102,10 +102,10 @@ the *Klipper* pattern: KIAUH treats it as a Klipper instance called "updater",
 opens it to read `EnvironmentFile=`, and its whole menu crashes if the unit is
 not world-readable.
 
-`klipper_updater` and `klipper-mcu-updater` happen to slip past that exact regex
-too, but only via quirks - an underscore is not a hyphen, and the character class
-forbids a second hyphen. A name that starts with no component name at all is safe
-by construction instead.
+`klipper_updater` and `klipper-klipper-updater` happen to slip past that exact
+regex too, but only via quirks - an underscore is not a hyphen, and the character
+class forbids a second hyphen. A name that starts with no component name at all
+is safe by construction instead, which is what `mcu-updater` is.
 
 The unit must also equal the `[update_manager <name>]` section, because Moonraker
 only accepts a `managed_services` value matching that, `klipper`, or `moonraker`.
@@ -121,11 +121,11 @@ Every path derives from one `Paths` object, so nothing is hardcoded elsewhere:
 
 | Variable | Replaces |
 | --- | --- |
-| `KLIPPER_UPDATER_HOME` | `~` |
-| `KLIPPER_UPDATER_PRINTER_DATA` | `~/printer_data` |
-| `KLIPPER_UPDATER_CONFIG_DIR` | `…/config/mcu-updater` |
-| `KLIPPER_UPDATER_DATA_DIR` | `…/mcu-updater` |
-| `KLIPPER_UPDATER_FAKE_BUS` | `/dev/serial/by-id` |
+| `MCU_UPDATER_HOME` | `~` |
+| `MCU_UPDATER_PRINTER_DATA` | `~/printer_data` |
+| `MCU_UPDATER_CONFIG_DIR` | `…/config/mcu-updater` |
+| `MCU_UPDATER_DATA_DIR` | `…/mcu-updater` |
+| `MCU_UPDATER_FAKE_BUS` | `/dev/serial/by-id` |
 
 ## Coming from the old layout
 

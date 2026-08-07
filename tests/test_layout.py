@@ -11,14 +11,14 @@ import os
 
 import pytest
 
-from klipper_updater.errors import ConfigError
-from klipper_updater.layout import migrate_type_dirs
-from klipper_updater.paths import Paths
+from mcu_updater.errors import ConfigError
+from mcu_updater.layout import migrate_type_dirs
+from mcu_updater.paths import Paths
 
 
 @pytest.fixture()
 def paths(tmp_path) -> Paths:
-    return Paths.from_env(env={"KLIPPER_UPDATER_HOME": str(tmp_path)})
+    return Paths.from_env(env={"MCU_UPDATER_HOME": str(tmp_path)})
 
 
 def write(path: str, text: str = "CONFIG_X=y\n") -> None:
@@ -170,10 +170,10 @@ def test_a_type_dir_holding_only_artifacts_is_not_ours_to_move(paths):
 
 
 def test_the_cli_migrates_before_running_a_command(tmp_path, monkeypatch, capsys):
-    from klipper_updater import cli
+    from mcu_updater import cli
 
-    monkeypatch.setenv("KLIPPER_UPDATER_HOME", str(tmp_path))
-    monkeypatch.setenv("KLIPPER_UPDATER_FAKE_BUS", str(tmp_path / "bus"))
+    monkeypatch.setenv("MCU_UPDATER_HOME", str(tmp_path))
+    monkeypatch.setenv("MCU_UPDATER_FAKE_BUS", str(tmp_path / "bus"))
     os.makedirs(tmp_path / "bus")
 
     p = Paths.from_env()
@@ -187,9 +187,9 @@ def test_the_cli_migrates_before_running_a_command(tmp_path, monkeypatch, capsys
 
 
 def test_the_agent_migrates_before_serving(tmp_path, monkeypatch):
-    from klipper_updater.agent import __main__ as agent_main
+    from mcu_updater.agent import __main__ as agent_main
 
-    monkeypatch.setenv("KLIPPER_UPDATER_HOME", str(tmp_path))
+    monkeypatch.setenv("MCU_UPDATER_HOME", str(tmp_path))
 
     p = Paths.from_env()
     write(os.path.join(p.legacy_type_dir("bttebb36"), "klipper.config"), "CONFIG_A=y\n")
@@ -214,9 +214,9 @@ def test_the_agent_migrates_before_serving(tmp_path, monkeypatch):
 def test_the_agent_survives_a_migration_it_cannot_do(tmp_path, monkeypatch):
     """Exiting would mean a systemd restart loop, taking the panel - and the
     status that would explain the problem - offline with it."""
-    from klipper_updater.agent import __main__ as agent_main
+    from mcu_updater.agent import __main__ as agent_main
 
-    monkeypatch.setenv("KLIPPER_UPDATER_HOME", str(tmp_path))
+    monkeypatch.setenv("MCU_UPDATER_HOME", str(tmp_path))
 
     p = Paths.from_env()
     write(os.path.join(p.legacy_type_dir("bttebb36"), "klipper.config"), "OLD\n")

@@ -1,6 +1,6 @@
 {
   "_comment": "Guards that must stay load-bearing. Run: ./scripts/mutation_test.py scripts/mutations/config-layout.json",
-  "file": "src/klipper_updater/layout.py",
+  "file": "src/mcu_updater/layout.py",
   "command": [
     "python",
     "-m",

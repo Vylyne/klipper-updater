@@ -35,7 +35,7 @@ PROJECT_URL = "https://github.com/Vylyne/mcu-updater"
 #: returning.
 BACKOFF = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 
-log = logging.getLogger("klipper_updater.agent")
+log = logging.getLogger("mcu_updater.agent")
 
 
 class Agent:

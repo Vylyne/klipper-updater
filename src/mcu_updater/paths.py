@@ -7,12 +7,12 @@ entire core runs against a tmp_path on Windows with no mocks and no hardware.
 
 Env overrides (all honoured by :meth:`Paths.from_env`):
 
-  KLIPPER_UPDATER_HOME          pretend this is ~
-  KLIPPER_UPDATER_CONFIG_DIR    relocate the hand-edited config dir
-  KLIPPER_UPDATER_DATA_DIR      relocate the artifact/state dir
-  KLIPPER_UPDATER_FAKE_BUS      replace /dev/serial/by-id (touch/rm files in it
+  MCU_UPDATER_HOME          pretend this is ~
+  MCU_UPDATER_CONFIG_DIR    relocate the hand-edited config dir
+  MCU_UPDATER_DATA_DIR      relocate the artifact/state dir
+  MCU_UPDATER_FAKE_BUS      replace /dev/serial/by-id (touch/rm files in it
                                 to simulate a board re-enumerating)
-  KLIPPER_UPDATER_PRINTER_DATA  relocate ~/printer_data
+  MCU_UPDATER_PRINTER_DATA  relocate ~/printer_data
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ DEFAULT_SERIAL_BY_ID = "/dev/serial/by-id"
 #: Per-type config folders are gathered under this subdirectory of `config_dir`.
 #: They used to sit directly in it, so a printer with six board types showed six
 #: folders in Mainsail's file browser before the one file anyone edits.
-#: :func:`klipper_updater.layout.migrate_type_dirs` moves an old install across.
+#: :func:`mcu_updater.layout.migrate_type_dirs` moves an old install across.
 TYPE_SUBDIR = "types"
 
 
@@ -258,17 +258,17 @@ class Paths:
     def from_env(cls, home: str | None = None, env: dict[str, str] | None = None) -> Paths:
         e = os.environ if env is None else env
 
-        resolved_home = home or e.get("KLIPPER_UPDATER_HOME") or os.path.expanduser("~")
+        resolved_home = home or e.get("MCU_UPDATER_HOME") or os.path.expanduser("~")
         resolved_home = os.path.abspath(resolved_home)
 
-        pdata = e.get("KLIPPER_UPDATER_PRINTER_DATA") or os.path.join(resolved_home, "printer_data")
+        pdata = e.get("MCU_UPDATER_PRINTER_DATA") or os.path.join(resolved_home, "printer_data")
         pdata = os.path.abspath(pdata)
 
-        config = e.get("KLIPPER_UPDATER_CONFIG_DIR") or os.path.join(
+        config = e.get("MCU_UPDATER_CONFIG_DIR") or os.path.join(
             pdata, "config", "mcu-updater"
         )
-        data = e.get("KLIPPER_UPDATER_DATA_DIR") or os.path.join(pdata, "mcu-updater")
-        bus = e.get("KLIPPER_UPDATER_FAKE_BUS") or DEFAULT_SERIAL_BY_ID
+        data = e.get("MCU_UPDATER_DATA_DIR") or os.path.join(pdata, "mcu-updater")
+        bus = e.get("MCU_UPDATER_FAKE_BUS") or DEFAULT_SERIAL_BY_ID
 
         return cls(
             home=resolved_home,

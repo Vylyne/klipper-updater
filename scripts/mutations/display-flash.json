@@ -1,6 +1,6 @@
 {
   "_comment": "Display flash gates in the agent.",
-  "file": "src/klipper_updater/agent/methods.py",
+  "file": "src/mcu_updater/agent/methods.py",
   "command": [
     "python",
     "-m",

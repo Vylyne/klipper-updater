@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from klipper_updater.build import run_streamed
-from klipper_updater.errors import OperationCancelled
+from mcu_updater.build import run_streamed
+from mcu_updater.errors import OperationCancelled
 
 from .conftest import cmd_tokens
 
@@ -173,7 +173,7 @@ def test_the_command_is_echoed_before_running(tmp_path):
 
 def test_a_missing_executable_is_a_clean_tool_error(tmp_path):
     """A host without build-essential should get a sentence, not a traceback."""
-    from klipper_updater.errors import ToolMissingError
+    from mcu_updater.errors import ToolMissingError
 
     with pytest.raises(ToolMissingError) as exc:
         run_streamed(

@@ -20,10 +20,10 @@ import time
 
 import pytest
 
-from klipper_updater.agent.methods import Api
-from klipper_updater.config import Registry
-from klipper_updater.devices import dfu_serial_for
-from klipper_updater.pairings import Pairings
+from mcu_updater.agent.methods import Api
+from mcu_updater.config import Registry
+from mcu_updater.devices import dfu_serial_for
+from mcu_updater.pairings import Pairings
 
 from .conftest import make_device
 
@@ -215,7 +215,7 @@ def test_no_pairings_at_all_does_no_work(api, fake_root):
 def test_the_flash_records_the_pairing_before_waiting(paths, live_registry_text, fake_root):
     """Ordering is the point: the wait timing out is the case this covers, so
     recording after it would help in exactly the situations it does not."""
-    from klipper_updater.jobs import JobRunner
+    from mcu_updater.jobs import JobRunner
 
     from .conftest import write_settings
     from .test_agent_dfu import ONE_BOARD
@@ -230,7 +230,7 @@ def test_the_flash_records_the_pairing_before_waiting(paths, live_registry_text,
     runner = JobRunner(
         paths,
         lambda: __import__(
-            "klipper_updater.settings", fromlist=["load_settings"]
+            "mcu_updater.settings", fromlist=["load_settings"]
         ).load_settings(paths.settings_file),
     )
     api = Api(paths, runner=runner)
@@ -239,8 +239,8 @@ def test_the_flash_records_the_pairing_before_waiting(paths, live_registry_text,
     import pytest as _pytest
 
     monkeypatch = _pytest.MonkeyPatch()
-    monkeypatch.setattr("klipper_updater.flash.subprocess.run", _FakeRun(ONE_BOARD))
-    monkeypatch.setattr("klipper_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
+    monkeypatch.setattr("mcu_updater.flash.subprocess.run", _FakeRun(ONE_BOARD))
+    monkeypatch.setattr("mcu_updater.flash.flash_initial_bootloader", lambda *a, **k: None)
     try:
         res = api.dispatch("fw.add_mcu.start", {"name": "bttebb36"})
         assert runner.wait(timeout=30)

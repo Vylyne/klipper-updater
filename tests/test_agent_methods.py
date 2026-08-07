@@ -13,10 +13,10 @@ import sys
 
 import pytest
 
-from klipper_updater import API_VERSION
-from klipper_updater.agent.methods import Api
-from klipper_updater.agent.rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcError
-from klipper_updater.settings import Settings
+from mcu_updater import API_VERSION
+from mcu_updater.agent.methods import Api
+from mcu_updater.agent.rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcError
+from mcu_updater.settings import Settings
 
 from .conftest import make_device, write_settings
 
@@ -150,8 +150,8 @@ def test_artifact_goes_clean_after_a_build(api, paths, settings):
     """The staleness field is the whole reason the panel is worth building."""
     import os
 
-    from klipper_updater.build import build, clear_head_cache
-    from klipper_updater.config import Registry
+    from mcu_updater.build import build, clear_head_cache
+    from mcu_updater.config import Registry
 
     clear_head_cache()
     settings.dry_run = True
@@ -719,7 +719,7 @@ def test_enabling_flashing_makes_fw_flash_appear(paths, live_registry_text):
     the whole point: no SSH, no restart."""
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
-    from klipper_updater.jobs import JobRunner
+    from mcu_updater.jobs import JobRunner
 
     api = Api(paths)
     # The runner needs a settings getter, and it must be the Api's own so the
@@ -925,8 +925,8 @@ def test_save_refuses_while_a_build_holds_the_lock(kapi, paths):
     build() hashes the .config to record what a binary was compiled from, so
     changing it underneath would leave provenance that does not match the artifact
     and staleness would report a wrong binary as fresh."""
-    from klipper_updater.errors import BusyError
-    from klipper_updater.lock import exclusive
+    from mcu_updater.errors import BusyError
+    from mcu_updater.lock import exclusive
 
     sid = open_session(kapi)["session"]
     kapi.dispatch("fw.kconfig.set", {"session": sid, "id": "BOARD_NAME", "value": "x"})
@@ -943,7 +943,7 @@ def test_save_refuses_while_a_build_holds_the_lock(kapi, paths):
 def test_save_and_build_starts_a_job(paths, live_registry_text, fake_root):
     import shutil
 
-    from klipper_updater.jobs import JobRunner
+    from mcu_updater.jobs import JobRunner
 
     fixtures = pathlib.Path(__file__).resolve().parent / "fixtures"
     tree = fake_root / "klipper"
@@ -1025,7 +1025,7 @@ def test_klipper_and_katapult_are_configured_independently(kapi):
     ],
 )
 def test_the_commit_is_extracted_from_a_git_describe(version, sha):
-    from klipper_updater.agent.methods import _running_sha
+    from mcu_updater.agent.methods import _running_sha
 
     assert _running_sha(version) == sha
 
@@ -1204,7 +1204,7 @@ def test_the_same_commit_with_a_different_binary_is_artifact_changed(api, paths)
     """The case a version comparison structurally cannot see, and Vi's actual
     workflow: edit the buffer patch, rebuild, and the boards still report the same
     klipper commit while holding last week's firmware."""
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     log = FlashLog(paths)
     log.record("A-if00", mcu_type="t", fw="klipper", bin_sha256="old" + "0" * 61, fw_sha=HEAD)
@@ -1217,7 +1217,7 @@ def test_the_same_commit_with_a_different_binary_is_artifact_changed(api, paths)
 
 
 def test_the_same_binary_is_up_to_date(api, paths):
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     log = FlashLog(paths)
     log.record("A-if00", mcu_type="t", fw="klipper", bin_sha256="aa" * 32, fw_sha=HEAD)
@@ -1232,7 +1232,7 @@ def test_the_same_binary_is_up_to_date(api, paths):
 def test_a_record_contradicted_by_the_board_is_ignored(api, paths):
     """Flashed by hand outside the tool: the record cannot be trusted, so the
     commit comparison stands on its own rather than an invented mismatch."""
-    from klipper_updater.build import FlashLog
+    from mcu_updater.build import FlashLog
 
     log = FlashLog(paths)
     log.record("A-if00", mcu_type="t", fw="klipper", bin_sha256="old" + "0" * 61, fw_sha="ffffffff")
@@ -1255,10 +1255,10 @@ def test_a_flash_writes_a_record(paths, live_registry_text):
     rebuild can tell that board is behind."""
     import dataclasses
 
-    from klipper_updater.build import FlashLog, build
-    from klipper_updater.config import Registry
-    from klipper_updater.flash import flash_katapult
-    from klipper_updater.settings import Settings
+    from mcu_updater.build import FlashLog, build
+    from mcu_updater.config import Registry
+    from mcu_updater.flash import flash_katapult
+    from mcu_updater.settings import Settings
 
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)

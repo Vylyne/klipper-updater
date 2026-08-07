@@ -10,11 +10,11 @@ import os
 
 import pytest
 
-from klipper_updater.agent.methods import Api
-from klipper_updater.agent.rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcError
-from klipper_updater.errors import ServiceControlError
-from klipper_updater.jobs import JobRunner
-from klipper_updater.service import Journal, NullService, klipper_stopped
+from mcu_updater.agent.methods import Api
+from mcu_updater.agent.rpc import ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, RpcError
+from mcu_updater.errors import ServiceControlError
+from mcu_updater.jobs import JobRunner
+from mcu_updater.service import Journal, NullService, klipper_stopped
 
 from .conftest import make_device, write_settings
 
@@ -69,7 +69,7 @@ def flashable(paths, live_registry_text, fake_root):
     make_device(fake_root / "bus", "Klipper", TRACKED_CHIPSET, TRACKED_SERIAL)
 
     runner = JobRunner(paths, lambda: __import__(
-        "klipper_updater.settings", fromlist=["load_settings"]
+        "mcu_updater.settings", fromlist=["load_settings"]
     ).load_settings(paths.settings_file))
     api = Api(paths, runner=runner, call=_moonraker())
     # Keep the readiness poll from dominating the test run.
@@ -93,7 +93,7 @@ def test_flashing_is_not_advertised_by_default(paths, live_registry_text):
         fh.write(live_registry_text)
     _write_settings(paths)  # enable_flashing omitted -> false
     api = Api(paths, runner=JobRunner(paths, lambda: __import__(
-        "klipper_updater.settings", fromlist=["load_settings"]
+        "mcu_updater.settings", fromlist=["load_settings"]
     ).load_settings(paths.settings_file)))
 
     assert "fw.flash" not in api.dispatch("fw.ping")["capabilities"]
@@ -114,7 +114,7 @@ def test_the_gate_is_reported_by_code_when_called_directly(paths, live_registry_
         fh.write(live_registry_text)
     _write_settings(paths)
     api = Api(paths, runner=JobRunner(paths, lambda: __import__(
-        "klipper_updater.settings", fromlist=["load_settings"]
+        "mcu_updater.settings", fromlist=["load_settings"]
     ).load_settings(paths.settings_file)))
     with pytest.raises(RpcError) as exc:
         api.flash({"serial": TRACKED_SERIAL})
@@ -303,7 +303,7 @@ def test_the_journal_records_the_stop_for_crash_recovery(paths):
 def test_agent_startup_reconciles_a_crashed_flash(paths, live_registry_text):
     """Simulates SIGKILL mid-flash: the journal survives, so the next start of the
     agent brings klipper back up."""
-    from klipper_updater.agent.service import Agent
+    from mcu_updater.agent.service import Agent
 
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
@@ -320,7 +320,7 @@ def test_shutdown_defers_while_a_flash_is_running(paths, live_registry_text):
     """systemctl restart mid-flash would otherwise SIGKILL flashtool mid-write."""
     import threading
 
-    from klipper_updater.agent.service import Agent
+    from mcu_updater.agent.service import Agent
 
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)
@@ -345,7 +345,7 @@ def test_shutdown_does_not_defer_for_a_build(paths, live_registry_text):
     """A build is safe to interrupt, so waiting for it would just delay a restart."""
     import threading
 
-    from klipper_updater.agent.service import Agent
+    from mcu_updater.agent.service import Agent
 
     with open(paths.registry_file, "w", encoding="utf-8") as fh:
         fh.write(live_registry_text)

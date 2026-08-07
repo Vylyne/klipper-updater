@@ -208,13 +208,13 @@ filesystem location comes from a `Paths` object that honours these overrides:
 
 | Variable | Replaces |
 | --- | --- |
-| `KLIPPER_UPDATER_HOME` | `~` |
-| `KLIPPER_UPDATER_PRINTER_DATA` | `~/printer_data` |
-| `KLIPPER_UPDATER_CONFIG_DIR` | `…/config/mcu-updater` |
-| `KLIPPER_UPDATER_DATA_DIR` | `…/mcu-updater` |
-| `KLIPPER_UPDATER_FAKE_BUS` | `/dev/serial/by-id` |
+| `MCU_UPDATER_HOME` | `~` |
+| `MCU_UPDATER_PRINTER_DATA` | `~/printer_data` |
+| `MCU_UPDATER_CONFIG_DIR` | `…/config/mcu-updater` |
+| `MCU_UPDATER_DATA_DIR` | `…/mcu-updater` |
+| `MCU_UPDATER_FAKE_BUS` | `/dev/serial/by-id` |
 
-`KLIPPER_UPDATER_FAKE_BUS` is worth knowing about: `touch` and `rm` files named
+`MCU_UPDATER_FAKE_BUS` is worth knowing about: `touch` and `rm` files named
 `usb-<fw>_<chipset>_<serial>` in that directory to simulate a board
 re-enumerating between Klipper and Katapult, and combine it with `--dry-run` for
 a complete end-to-end rehearsal with no hardware and no risk.
