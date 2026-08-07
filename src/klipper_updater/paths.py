@@ -151,6 +151,16 @@ class Paths:
         """
         return os.path.join(self.data_dir, ".dfu-pairings.json")
 
+    def display_sidecar(self, env: str) -> str:
+        """Build provenance for one display env: which commit the image is from.
+
+        In our data tree even though the image itself lives in the source repo's
+        `.pio/build/<env>/`. That directory is PlatformIO's, and writing our
+        bookkeeping into it would put it in the path of `pio run -t clean` and
+        into the user's git status.
+        """
+        return os.path.join(self.data_dir, "displays", f"{env}.build.json")
+
     @property
     def display_macs_file(self) -> str:
         """Which display (by MAC) was last flashed on which port.

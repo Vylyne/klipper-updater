@@ -260,6 +260,92 @@ def firmware_state(running: Optional[str], state: SourceState) -> str:
     return FW_BEHIND if state.version else FW_UNKNOWN
 
 
+# --------------------------------------------------------------------------
+# is the BUILT IMAGE current
+#
+# Separate from firmware_state, which asks about the screens. This asks about
+# the .bin, and it earns its place because `fw.display.flash` uploads whatever
+# is in .pio/build without building first - so a source tree that has moved
+# since the last build writes old firmware to every screen, silently.
+# --------------------------------------------------------------------------
+
+ART_CURRENT = "current"
+ART_STALE = "source_changed"
+ART_NEVER = "never_built"
+ART_DIRTY = "dirty"
+#: An image exists that we did not build, so there is no provenance for it.
+ART_FOREIGN = "unknown"
+
+
+def record_build(paths: Paths, display: DisplayType, state: SourceState) -> None:
+    """Note which commit produced the image now sitting in .pio/build.
+
+    Also records the file's size and mtime - not to judge staleness by them,
+    which is exactly the lie `staleness()` was written to avoid, but to notice
+    that *someone else* rebuilt afterwards. A hand-run `pio run` would otherwise
+    leave our provenance describing an image that no longer exists, and claiming
+    "up to date" about a binary we know nothing about is worse than admitting we
+    cannot tell.
+    """
+    path = firmware_bin(display)
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return
+
+    record = {
+        "sha": state.head,
+        "version": state.version,
+        "dirty": state.dirty,
+        "at": time.time(),
+        "bin_size": stat.st_size,
+        "bin_mtime": stat.st_mtime,
+    }
+    sidecar = paths.display_sidecar(display.env)
+    os.makedirs(os.path.dirname(sidecar), exist_ok=True)
+    tmp = sidecar + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=2, sort_keys=True)
+    os.replace(tmp, sidecar)
+
+
+def artifact_state(paths: Paths, display: DisplayType, state: SourceState) -> str:
+    """Does the built image match the source tree?
+
+    `unknown` rather than a guess whenever the provenance cannot be trusted -
+    no sidecar, a binary someone else rebuilt, or no git checkout to compare
+    against. The cost of a wrong `current` here is flashing six screens with
+    firmware from before the fix you just made.
+    """
+    path = firmware_bin(display)
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return ART_NEVER
+
+    try:
+        with open(paths.display_sidecar(display.env), encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError):
+        return ART_FOREIGN
+    if not isinstance(record, dict):
+        return ART_FOREIGN
+
+    # Built by someone else since we last looked.
+    if record.get("bin_size") != stat.st_size or record.get("bin_mtime") != stat.st_mtime:
+        return ART_FOREIGN
+
+    if record.get("dirty"):
+        # Same reasoning as a dirty firmware: the tree it came from is gone.
+        return ART_DIRTY
+
+    built, head = record.get("sha"), state.head
+    if not built or not head:
+        return ART_FOREIGN
+    size = min(len(built), len(head))
+    return ART_CURRENT if built[:size].lower() == head[:size].lower() else ART_STALE
+
+
 def resolve_port(port: str) -> str:
     """Follow a udev symlink to the device PlatformIO can actually see.
 
@@ -317,6 +403,12 @@ def build(
             fw=display.env,
             returncode=rc,
         )
+
+    # After the build, so it describes the image that now exists. Read here
+    # rather than passed in: this is the commit the binary was actually built
+    # from, and taking it from before the build would be a different question.
+    if not settings.dry_run:
+        record_build(paths, display, source_state(source))
     return firmware_bin(display)
 
 

@@ -522,3 +522,110 @@ def test_source_state_survives_a_directory_that_is_not_a_checkout(tmp_path):
     assert source_state(str(tmp_path)).head is None
     assert source_state(str(tmp_path / "nope")).head is None
     assert source_state("").head is None
+
+
+# --------------------------------------------------------------------------
+# is the BUILT IMAGE current
+#
+# fw.display.flash uploads whatever sits in .pio/build without building first,
+# so a source tree that has moved since the last build writes old firmware to
+# every screen of the type - silently, because the upload itself succeeds.
+# --------------------------------------------------------------------------
+
+from klipper_updater.displays import (  # noqa: E402
+    ART_CURRENT,
+    ART_DIRTY,
+    ART_FOREIGN,
+    ART_NEVER,
+    ART_STALE,
+    artifact_state,
+    record_build,
+)
+
+
+def _bin(display):
+    from klipper_updater.displays import firmware_bin
+
+    path = firmware_bin(display)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(b"\x00firmware")
+    return path
+
+
+def test_no_image_at_all_is_never_built(paths, display):
+    assert artifact_state(paths, display, TREE) == ART_NEVER
+
+
+def test_an_image_we_built_from_this_commit_is_current(paths, display):
+    _bin(display)
+    record_build(paths, display, TREE)
+    assert artifact_state(paths, display, TREE) == ART_CURRENT
+
+
+def test_an_image_built_before_the_tree_moved_is_stale(paths, display):
+    _bin(display)
+    record_build(paths, display, TREE)
+    moved = SourceState(head="feedface", version="0.4.0")
+    assert artifact_state(paths, display, moved) == ART_STALE
+
+
+def test_an_image_built_from_a_dirty_tree_cannot_claim_to_be_current(paths, display):
+    _bin(display)
+    record_build(paths, display, SourceState(head="d34db33", version="0.4.0", dirty=True))
+    assert artifact_state(paths, display, TREE) == ART_DIRTY
+
+
+def test_an_image_with_no_provenance_is_unknown_not_current(paths, display):
+    """Someone ran `pio run` by hand. Claiming "up to date" about a binary we
+    know nothing about is worse than admitting we cannot tell."""
+    _bin(display)
+    assert artifact_state(paths, display, TREE) == ART_FOREIGN
+
+
+def test_a_rebuild_by_someone_else_invalidates_our_provenance(paths, display):
+    """The sidecar would otherwise describe an image that no longer exists."""
+    _bin(display)
+    record_build(paths, display, TREE)
+    assert artifact_state(paths, display, TREE) == ART_CURRENT
+
+    from klipper_updater.displays import firmware_bin
+
+    with open(firmware_bin(display), "wb") as fh:
+        fh.write(b"\x00different and longer")
+
+    assert artifact_state(paths, display, TREE) == ART_FOREIGN
+
+
+def test_a_corrupt_sidecar_is_unknown_rather_than_an_exception(paths, display):
+    _bin(display)
+    sidecar = paths.display_sidecar(display.env)
+    os.makedirs(os.path.dirname(sidecar), exist_ok=True)
+    with open(sidecar, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    assert artifact_state(paths, display, TREE) == ART_FOREIGN
+
+
+def test_no_git_checkout_cannot_judge_the_image(paths, display):
+    _bin(display)
+    record_build(paths, display, TREE)
+    assert artifact_state(paths, display, SourceState()) == ART_FOREIGN
+
+
+def test_the_sidecar_stays_out_of_the_users_source_tree(paths, display):
+    """.pio/build is PlatformIO's, and `pio run -t clean` owns it."""
+    _bin(display)
+    record_build(paths, display, TREE)
+    assert paths.display_sidecar(display.env).startswith(paths.data_dir)
+    assert ".pio" not in paths.display_sidecar(display.env)
+
+
+def test_a_dry_run_build_records_no_provenance(paths, settings, display, monkeypatch):
+    """Nothing was compiled, so there is nothing to describe."""
+    settings.dry_run = True
+    monkeypatch.setattr(displays, "find_pio", lambda s: "/usr/bin/pio")
+    monkeypatch.setattr(displays, "run_streamed", lambda cmd, **kw: 0)
+
+    displays.build(paths, settings, display)
+
+    assert not os.path.exists(paths.display_sidecar(display.env))

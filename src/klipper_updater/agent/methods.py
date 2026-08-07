@@ -383,6 +383,12 @@ class Api:
                     # image on disk", not staleness. PlatformIO decides whether a
                     # rebuild is needed, and it is fast when nothing changed.
                     "has_firmware": os.path.exists(displays_mod.firmware_bin(display)),
+                    # current | source_changed | dirty | never_built | unknown.
+                    # Real staleness, unlike has_firmware: fw.display.flash
+                    # uploads whatever is in .pio/build without building, so a
+                    # tree that moved since the last build writes old firmware
+                    # to every screen with nothing to say so.
+                    "artifact_state": displays_mod.artifact_state(self.paths, display, tree),
                     "reachable": listed["reachable"],
                     # One klippy module serves every screen of a type, so this is
                     # a property of the type. First screen that reports one -
