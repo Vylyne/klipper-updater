@@ -236,3 +236,187 @@ def test_screens_are_matched_to_their_type_by_klipper_section(api, paths, fake_r
 
     assert [s["name"] for s in by_env["knomi_toolchanger"]["screens"]] == ["t0_knomi"]
     assert [s["name"] for s in by_env["otherscreen"]["screens"]] == ["a"]
+
+
+# --------------------------------------------------------------------------
+# live status from the module's get_status
+#
+# knomi_serial grew a get_status reporting what the screen itself says: its
+# firmware version, whether it is actually answering, and whether it speaks the
+# protocol the module expects. Every one of those is unobtainable from outside,
+# which is why they are worth a second source.
+#
+# The join has a trap in it. `configfile.settings` lowercases section names
+# while the printer object keeps the case printer.cfg used, so querying by the
+# name settings hands you returns nothing at all - silently - for anyone who
+# capitalises. Which is everyone: [knomi_serial T0_knomi].
+# --------------------------------------------------------------------------
+
+
+def _moonraker_live(sections: dict, objects: dict):
+    """Serves objects.list and objects.query, like a Klipper with the module."""
+    queries = []
+
+    def call(method, params, timeout):
+        if method == "printer.objects.list":
+            return {"objects": ["configfile", "toolhead", *objects]}
+        if method == "printer.objects.query":
+            queries.append(params)
+            status = {"configfile": {"settings": sections}}
+            for name, values in objects.items():
+                if name in (params or {}).get("objects", {}):
+                    status[name] = values
+            return {"status": status}
+        return {}
+
+    call.queries = queries  # type: ignore[attr-defined]
+    return call
+
+
+def _configured(port: str) -> dict:
+    return {"knomi_serial t0_knomi": {"serial": port}}
+
+
+def test_the_true_capitalisation_comes_from_the_printer_object(api, fake_root):
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    api._call = _moonraker_live(
+        _configured(port),
+        {"knomi_serial T0_knomi": {"firmware_version": "0.4.0"}},
+    )
+    screen = api.display_list({})["displays"][0]
+
+    # Not "t0_knomi" - that is only what settings lowercased it to.
+    assert screen["section"] == "knomi_serial T0_knomi"
+    assert screen["name"] == "T0_knomi"
+
+
+def test_the_object_is_queried_by_its_real_name(api, fake_root):
+    """Querying by the settings name returns nothing, and says nothing about it."""
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    call = _moonraker_live(_configured(port), {"knomi_serial T0_knomi": {}})
+    api._call = call
+    api.display_list({})
+
+    asked = call.queries[0]["objects"]  # type: ignore[attr-defined]
+    assert "knomi_serial T0_knomi" in asked
+    assert "knomi_serial t0_knomi" not in asked
+
+
+def test_what_the_screen_reports_reaches_the_caller(api, fake_root):
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    api._call = _moonraker_live(
+        _configured(port),
+        {
+            "knomi_serial T0_knomi": {
+                "connected": True,
+                "device_online": True,
+                "firmware_version": "0.4.0",
+                "module_version": "0.4.0",
+                "protocol_match": True,
+                "sleep_state": "awake",
+                "free_heap": 121764,
+                "device_uptime": 3601,
+            }
+        },
+    )
+    screen = api.display_list({})["displays"][0]
+
+    assert screen["firmware_version"] == "0.4.0"
+    assert screen["device_online"] is True
+    assert screen["protocol_match"] is True
+    assert screen["free_heap"] == 121764
+    assert screen["device_uptime"] == 3601
+
+
+def test_a_module_too_old_to_report_leaves_every_live_field_unknown(api, fake_root):
+    """None, not False. "We cannot tell" and "the screen is not there" are
+    different answers, and rendering the second for the first would invent a
+    fault on a working display."""
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    api._call = _moonraker_live(_configured(port), {"knomi_serial T0_knomi": {}})
+    screen = api.display_list({})["displays"][0]
+
+    assert screen["present"] is True  # the port still resolves
+    for field in ("connected", "device_online", "firmware_version", "protocol_match"):
+        assert screen[field] is None, field
+
+
+def test_a_port_that_resolves_is_not_the_same_as_a_screen_that_answers(api, fake_root):
+    """The whole reason for a second source: `present` only means the symlink
+    resolved. The far end can be unplugged and it stays true."""
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    api._call = _moonraker_live(
+        _configured(port),
+        {"knomi_serial T0_knomi": {"connected": True, "device_online": False}},
+    )
+    screen = api.display_list({})["displays"][0]
+
+    assert screen["present"] is True
+    assert screen["connected"] is True
+    assert screen["device_online"] is False
+
+
+def _with_display_type(api, paths, fake_root):
+    """display_status short-circuits with no [display] section - add one."""
+    with open(paths.registry_file, "a", encoding="utf-8") as fh:
+        fh.write(f"\n[display knomi_toolchanger]\nsource: {fake_root}\n")
+
+
+def test_a_protocol_mismatch_makes_the_type_need_flashing(api, paths, fake_root):
+    """The device declares its own protocol version, so this is authoritative -
+    the only "reflash this" a display can produce."""
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+    _with_display_type(api, paths, fake_root)
+
+    api._call = _moonraker_live(
+        _configured(port),
+        {"knomi_serial T0_knomi": {"protocol_match": False, "module_version": "0.4.0"}},
+    )
+    display = api.display_status()[0]
+
+    assert display["needs_flash"] is True
+    assert display["module_version"] == "0.4.0"
+
+
+def test_an_unknown_protocol_is_not_treated_as_a_mismatch(api, paths, fake_root):
+    """None until the device reports in. Offering "reflash" on a screen that has
+    simply not spoken yet would send people to reflash a healthy display."""
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+    _with_display_type(api, paths, fake_root)
+
+    api._call = _moonraker_live(
+        _configured(port), {"knomi_serial T0_knomi": {"protocol_match": None}}
+    )
+    assert api.display_status()[0]["needs_flash"] is False
+
+
+def test_the_object_list_is_fetched_once_for_mcus_and_displays(api, fake_root):
+    """It is a whole extra round trip, and fw.status has a sub-second budget."""
+    port = str(fake_root / "knomi_t0")
+    open(port, "w").close()
+
+    calls = []
+    inner = _moonraker_live(_configured(port), {"knomi_serial T0_knomi": {}})
+
+    def counting(method, params, timeout):
+        calls.append(method)
+        return inner(method, params, timeout)
+
+    api._call = counting
+    api.display_list({})
+    api._mcu_object_names()
+    api.display_list({})
+
+    assert calls.count("printer.objects.list") == 1

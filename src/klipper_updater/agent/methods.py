@@ -128,9 +128,9 @@ class Api:
         # Created on first kconfig call; an agent that never opens one pays
         # neither the import nor the memory.
         self._kconfig_sessions: Optional[Any] = None
-        # Cached printer-object names; see _mcu_object_names.
-        self._mcu_names: Optional[list[str]] = None
-        self._mcu_names_at = 0.0
+        # Cached printer-object names; see _all_object_names.
+        self._object_names: Optional[list[str]] = None
+        self._object_names_at = 0.0
 
     # -- helpers -----------------------------------------------------------
 
@@ -357,6 +357,12 @@ class Api:
                         # there. None until it has been flashed by us once.
                         "mac": known.get("mac"),
                         "flashed_at": known.get("at"),
+                        # A different screen answered here than last time. The
+                        # MAC's whole purpose - it is the only identity that
+                        # survives reflashing, so it is the only way to notice
+                        # two displays swapping sockets.
+                        "moved_from": known.get("moved_from"),
+                        "moved_at": known.get("moved_at"),
                     }
                 )
             out.append(
@@ -368,6 +374,17 @@ class Api:
                     # rebuild is needed, and it is fast when nothing changed.
                     "has_firmware": os.path.exists(displays_mod.firmware_bin(display)),
                     "reachable": listed["reachable"],
+                    # One klippy module serves every screen of a type, so this is
+                    # a property of the type. First screen that reports one -
+                    # they cannot disagree, and None means a module too old to
+                    # say.
+                    "module_version": next(
+                        (s["module_version"] for s in screens if s.get("module_version")),
+                        None,
+                    ),
+                    # Any screen whose firmware speaks a protocol the module does
+                    # not. The one thing here that genuinely means "reflash".
+                    "needs_flash": any(s.get("protocol_match") is False for s in screens),
                 }
             )
         return out
@@ -1199,13 +1216,6 @@ class Api:
         which otherwise shows up as a display that is simply blank, with Klipper
         reporting no error at all.
         """
-        res = self._probe("printer.objects.query", {"objects": {"configfile": ["settings"]}})
-        status = (res or {}).get("status")
-        if not isinstance(status, dict):
-            return {"displays": [], "reachable": False}
-
-        settings = (status.get("configfile") or {}).get("settings") or {}
-
         # Every configured type's section prefix, not just Knomi's - a second
         # display with its own klippy module declares a different one. Falls back
         # to knomi_serial so this still answers before any [display] section
@@ -1214,6 +1224,31 @@ class Api:
         prefixes.discard("")
         if not prefixes:
             prefixes = {"knomi_serial"}
+
+        # The printer objects, in their real capitalisation. Queried alongside
+        # configfile.settings rather than after it, so the whole answer is still
+        # one round trip.
+        objects: list[str] = []
+        for prefix in sorted(prefixes):
+            objects.extend(self._object_names_for(prefix))
+
+        query: dict[str, Any] = {"configfile": ["settings"]}
+        for name in objects:
+            # None means every field. The module decides what it can report, and
+            # a version of it older than get_status simply answers nothing -
+            # which is why none of the live fields below are required.
+            query[name] = None
+
+        res = self._probe("printer.objects.query", {"objects": query})
+        status = (res or {}).get("status")
+        if not isinstance(status, dict):
+            return {"displays": [], "reachable": False}
+
+        settings = (status.get("configfile") or {}).get("settings") or {}
+        # Both keyed on the lowered name, because that is the only form the two
+        # sources agree on. See _object_names_for.
+        live_by_section = {name.lower(): (status.get(name) or {}) for name in objects}
+        truecase_by_section = {name.lower(): name for name in objects}
 
         displays = []
         for section, values in sorted(settings.items()):
@@ -1233,13 +1268,44 @@ class Api:
             except OSError:
                 resolved = None
 
+            # Prefer the object's capitalisation - it is what printer.cfg says,
+            # and what the user typed. Falls back to the lowered settings name
+            # when no object exists, which means the module failed to load.
+            true_section = truecase_by_section.get(section, section)
+            live = live_by_section.get(section) or {}
+
             displays.append(
                 {
-                    "name": section.split(" ", 1)[1],
-                    "section": section,
+                    "name": true_section.split(" ", 1)[1],
+                    "section": true_section,
                     "configured_path": configured,
                     "resolved_path": resolved,
+                    # The port exists. Necessary but nowhere near sufficient:
+                    # the far end can be unplugged or wedged and this stays true.
                     "present": resolved is not None,
+                    # --- live, from the module's get_status ---
+                    #
+                    # All None against a module too old to report them, so every
+                    # consumer has to treat absence as "unknown" rather than
+                    # "false". `connected` is the host having the port open;
+                    # `device_online` is the screen actually answering.
+                    "connected": live.get("connected"),
+                    "device_online": live.get("device_online"),
+                    "firmware_version": live.get("firmware_version"),
+                    "module_version": live.get("module_version"),
+                    # False means the screen speaks a different wire protocol
+                    # than the module expects - the one authoritative "this needs
+                    # reflashing" a display can produce, because the device
+                    # itself declares it.
+                    "protocol_match": live.get("protocol_match"),
+                    "build_variant": live.get("build_variant"),
+                    "sleep_state": live.get("sleep_state"),
+                    "screen": live.get("screen"),
+                    "page": live.get("page"),
+                    "free_heap": live.get("free_heap"),
+                    "min_free_heap": live.get("min_free_heap"),
+                    "device_uptime": live.get("device_uptime"),
+                    "report_age": live.get("report_age"),
                 }
             )
 
@@ -2121,26 +2187,49 @@ class Api:
 
     # -- what is actually running on the boards -----------------------------
 
-    def _mcu_object_names(self) -> list[str]:
-        """Klipper's printer objects that are MCUs, cached.
+    def _all_object_names(self) -> list[str]:
+        """Every Klipper printer object, cached, in the case printer.cfg used.
 
-        `printer.objects.list` is a separate round trip and the answer only changes
-        when Klipper restarts, so it is cached - otherwise fw.status would cost two
-        probes instead of one and blow its sub-second budget.
+        Two reasons this is worth a cache rather than a probe per caller.
+        `printer.objects.list` is a separate round trip and fw.status has a
+        sub-second budget. And the answer only changes when Klipper restarts.
+
+        One list serves every prefix, so adding displays costs no extra round
+        trip on top of the MCU lookup that was already happening.
         """
         now = time.time()
-        if self._mcu_names is not None and now - self._mcu_names_at < MCU_NAMES_TTL:
-            return self._mcu_names
+        if self._object_names is not None and now - self._object_names_at < MCU_NAMES_TTL:
+            return self._object_names
         res = self._probe("printer.objects.list")
         objects = (res or {}).get("objects")
         if not isinstance(objects, list):
             # Leave the cache alone on a failed probe: a stale list beats none, and
             # the next call will try again.
-            return self._mcu_names or []
-        names = [o for o in objects if o == "mcu" or str(o).startswith("mcu ")]
-        self._mcu_names = names
-        self._mcu_names_at = now
+            return self._object_names or []
+        names = [str(o) for o in objects]
+        self._object_names = names
+        self._object_names_at = now
         return names
+
+    def _object_names_for(self, prefix: str) -> list[str]:
+        """Printer objects under `prefix`, with their real capitalisation.
+
+        **This is the only place the true name can be learned.** The printer
+        object keeps the case printer.cfg used, while `configfile.settings`
+        lowercases it - so `[knomi_serial T0_knomi]` is object
+        ``knomi_serial T0_knomi`` but setting ``knomi_serial t0_knomi``. Querying
+        an object by the name settings gave you returns nothing at all, silently,
+        for anyone who capitalises.
+        """
+        return [
+            name
+            for name in self._all_object_names()
+            if name == prefix or name.startswith(prefix + " ")
+        ]
+
+    def _mcu_object_names(self) -> list[str]:
+        """Klipper's printer objects that are MCUs."""
+        return self._object_names_for("mcu")
 
     def mcu_info(self) -> dict[str, dict[str, str]]:
         """Tracked serial -> the firmware version that board is actually running.

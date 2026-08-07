@@ -335,7 +335,18 @@ def record_mac(paths: Paths, port: str, mac: Optional[str], env: str) -> Optiona
         return None
     data = read_macs(paths)
     previous = (data.get(port) or {}).get("mac")
-    data[port] = {"mac": mac, "env": env, "at": time.time()}
+    now = time.time()
+    entry: dict = {"mac": mac, "env": env, "at": now}
+    if previous and previous != mac:
+        # Kept in the record, not just returned, so the panel can still say so
+        # tomorrow. The swap is only ever detectable during a flash - esptool
+        # needs the port, which needs Klipper stopped - so if it were not
+        # persisted here the one moment it is knowable would be the only moment
+        # it could be shown. Absent on the next flash that finds the same MAC,
+        # which is what clears the warning.
+        entry["moved_from"] = previous
+        entry["moved_at"] = now
+    data[port] = entry
 
     os.makedirs(os.path.dirname(paths.display_macs_file), exist_ok=True)
     tmp = paths.display_macs_file + ".tmp"
